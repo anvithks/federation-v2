@@ -28,8 +28,8 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeclientset "k8s.io/client-go/kubernetes"
 
-	dnsv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/multiclusterdns/v1alpha1"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
+	dnsv1a1 "sigs.k8s.io/kubefed/pkg/apis/multiclusterdns/v1alpha1"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
 func NewDomainObject(federation, domain string) *dnsv1a1.Domain {
@@ -65,7 +65,7 @@ func NewServiceObject(name, namespace string) *apiv1.Service {
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				util.ManagedByFederationLabelKey: util.ManagedByFederationLabelValue,
+				util.ManagedByKubeFedLabelKey: util.ManagedByKubeFedLabelValue,
 			},
 		},
 		Spec: apiv1.ServiceSpec{
@@ -84,7 +84,7 @@ func NewEndpointObject(name, namespace string) *apiv1.Endpoints {
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				util.ManagedByFederationLabelKey: util.ManagedByFederationLabelValue,
+				util.ManagedByKubeFedLabelKey: util.ManagedByKubeFedLabelValue,
 			},
 		},
 		Subsets: []apiv1.EndpointSubset{{
@@ -100,7 +100,7 @@ func NewIngressObject(name, namespace string) *extv1b1.Ingress {
 			Name:      name,
 			Namespace: namespace,
 			Labels: map[string]string{
-				util.ManagedByFederationLabelKey: util.ManagedByFederationLabelValue,
+				util.ManagedByKubeFedLabelKey: util.ManagedByKubeFedLabelValue,
 			},
 		},
 		Spec: extv1b1.IngressSpec{
@@ -138,23 +138,6 @@ func WaitForObject(tl TestLogger, namespace, name string, objectGetter func(name
 	})
 	if err != nil {
 		tl.Fatalf("Timedout waiting for desired state, \ndesired:%#v\nactual :%#v", desired, actual)
-	}
-}
-
-// WaitForObjectDeletion waits for the object to be deleted.
-func WaitForObjectDeletion(tl TestLogger, namespace, name string, objectGetter func(namespace, name string) (pkgruntime.Object, error), interval, timeout time.Duration) {
-	err := wait.PollImmediate(interval, timeout, func() (bool, error) {
-		_, err := objectGetter(namespace, name)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				return true, nil
-			}
-			return false, err
-		}
-		return false, nil
-	})
-	if err != nil {
-		tl.Fatalf("Timedout waiting for object %q/%q to be deleted", namespace, name)
 	}
 }
 

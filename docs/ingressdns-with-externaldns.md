@@ -22,7 +22,7 @@ external DNS records of Ingress resources in supported DNS providers.
 
 The above diagram illustrates MCIDNS. A typical MCIDNS workflow consists of:
 
-1. Creating `FederatedDeployment`, `FederatedService`, and `FederatedIngress` resources. The Federation sync
+1. Creating `FederatedDeployment`, `FederatedService`, and `FederatedIngress` resources. The KubeFed sync
    controller propagates the corresponding `Deployment`, `Service`, and `Ingress` resources to target clusters.
 2. Creating an `IngressDNSRecord` resource that identifies the intended domain name(s) and optional DNS resource
    record parameters.
@@ -40,19 +40,19 @@ MCIDNS is comprised of multiple types and controllers:
 
 Setting-up MCIDNS can be accomplished by referencing the following documentation:
 
-- The Federation-v2 [User Guide](userguide.md) to setup one or more Kubernetes clusters and the Federation
+- The KubeFed [User Guide](userguide.md) to setup one or more Kubernetes clusters and the KubeFed
   control-plane. If running in GKE, the cluster hosting the ExternalDNS controller must have scope
   `https://www.googleapis.com/auth/ndev.clouddns.readwrite`.
 - If needed, create a domain name with one of the supported providers or delegate a DNS subdomain for use with
   ExternalDNS. Reference your DNS provider documentation on how to create a domain or delegate a subdomain.
 - The [ExternalDNS](https://github.com/kubernetes-incubator/external-dns) user guides to run the external-dns
   controller. You must ensure the following `args` are provided in the external-dns Deployment manifest:
-  `--source=crd --crd-source-apiversion=multiclusterdns.federation.k8s.io/v1alpha1 --crd-source-kind=DNSEndpoint --registry=txt --txt-prefix=cname`
+  `--source=crd --crd-source-apiversion=multiclusterdns.kubefed.k8s.io/v1alpha1 --crd-source-kind=DNSEndpoint --registry=txt --txt-prefix=cname`
   **Note**: If you do not deploy the external-dns controller to the same namespace and use the default service account
-  of the federation control-plane, you must setup RBAC permissions allowing the controller access to necessary
+  of the KubeFed control-plane, you must setup RBAC permissions allowing the controller access to necessary
   resources.
 
-After the cluster, federation control-plane, and external-dns controller are running, use the
+After the cluster, KubeFed control-plane, and external-dns controller are running, use the
 [sample](../example/sample1) federated deployment, service, and ingress to test MCIDNS. Check the status of all the
 resources in each cluster by running:
 
@@ -72,7 +72,7 @@ It may take a few minutes for the `ADDRESS` field of each `Ingress` to be popula
 
 ```bash
 $ cat <<EOF | kubectl create -f -
-apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
 kind: IngressDNSRecord
 metadata:
   name: test-ingress
@@ -91,7 +91,7 @@ populate the `targets` field of the `DNSEndpoint` resource. For example:
 $ kubectl -n test-namespace get dnsendpoints -o yaml
 apiVersion: v1
 items:
-- apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+- apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
   kind: DNSEndpoint
   metadata:
     creationTimestamp: 2018-10-10T20:37:38Z
@@ -99,7 +99,7 @@ items:
     name: ingress-test-ingress
     namespace: test-namespace
     resourceVersion: "251874"
-    selfLink: /apis/multiclusterdns.federation.k8s.io/v1alpha1/namespaces/test-namespace/dnsendpoints/ingress-test-ingress
+    selfLink: /apis/multiclusterdns.kubefed.k8s.io/v1alpha1/namespaces/test-namespace/dnsendpoints/ingress-test-ingress
     uid: 538d1063-cccc-11e8-bebb-42010a8a00b8
   spec:
     endpoints:

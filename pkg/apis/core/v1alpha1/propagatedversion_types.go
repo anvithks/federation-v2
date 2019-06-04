@@ -27,31 +27,34 @@ type PropagatedVersionSpec struct {
 // PropagatedVersionStatus defines the observed state of PropagatedVersion
 type PropagatedVersionStatus struct {
 	// The observed version of the template for this resource.
-	TemplateVersion string `json:"templateVersion,omitempty"`
+	TemplateVersion string `json:"templateVersion"`
 	// The observed version of the overrides for this resource.
-	OverrideVersion string `json:"overridesVersion,omitempty"`
+	OverrideVersion string `json:"overridesVersion"`
 	// The last versions produced in each cluster for this resource.
+	// +optional
 	ClusterVersions []ClusterObjectVersion `json:"clusterVersions,omitempty"`
 }
 
 type ClusterObjectVersion struct {
 	// The name of the cluster the version is for.
-	ClusterName string `json:"clusterName,omitempty"`
-	// The last version produced for the resource by a federation
+	ClusterName string `json:"clusterName"`
+	// The last version produced for the resource by a KubeFed
 	// operation.
-	Version string `json:"version,omitempty"`
+	Version string `json:"version"`
 }
 
 // +genclient
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 
-// PropagatedVersion holds version information about the state propagated from
-// federation APIs configured by FederatedTypeConfig to target clusters. The
-// name of a PropagatedVersion encodes the kind and name of the resource it
-// stores information for. The type of version information stored in
-// PropagatedVersion will be the metadata.resourceVersion or metadata.Generation
-// of the resource depending on the value of spec.comparisonField in the
-// FederatedTypeConfig associated with the resource.
+// PropagatedVersion holds version information about the state
+// propagated from KubeFed APIs (configured by FederatedTypeConfig
+// resources) to member clusters. The name of a PropagatedVersion
+// encodes the kind and name of the resource it stores information for
+// (i.e. <lower-case kind>-<resource name>). If a target resource has
+// a populated metadata.Generation field, the generation will be
+// stored with a prefix of `gen:` as the version for the cluster.  If
+// metadata.Generation is not available, metadata.ResourceVersion will
+// be stored with a prefix of `rv:` as the version for the cluster.
 //
 // +k8s:openapi-gen=true
 // +kubebuilder:resource:path=propagatedversions
@@ -60,7 +63,7 @@ type PropagatedVersion struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   PropagatedVersionSpec   `json:"spec,omitempty"`
+	// +optional
 	Status PropagatedVersionStatus `json:"status,omitempty"`
 }
 

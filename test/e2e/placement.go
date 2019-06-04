@@ -25,31 +25,31 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
 var _ = Describe("Placement", func() {
-	f := framework.NewFederationFramework("placement")
+	f := framework.NewKubeFedFramework("placement")
 
 	tl := framework.NewE2ELogger()
 
 	typeConfigFixtures := common.TypeConfigFixturesOrDie(tl)
 
-	// TODO(marun) Since this test only targets namespaced federation,
-	// concurrent test isolation against unmanaged fixture is
+	// TODO(marun) Since this test only targets a namespaced control
+	// plane, concurrent test isolation against unmanaged fixture is
 	// effectively impossible.  The namespace placement would be
-	// picked up by other controllers targeting the federation
+	// picked up by other controllers targeting the KubeFed system
 	// namespace.
-	It("should be computed from namespace and resource placement for namespaced federation", func() {
+	It("should be computed from namespace and resource placement for a namespaced control plane", func() {
 		if !framework.TestContext.LimitedScope {
-			framework.Skipf("Considering namespace placement when determining resource placement is not supported for cluster-scoped federation.")
+			framework.Skipf("Considering namespace placement when determining resource placement is not supported for a cluster-scoped control plane.")
 		}
 
 		client, err := genericclient.New(f.KubeConfig())
@@ -61,8 +61,8 @@ var _ = Describe("Placement", func() {
 		var selectedTypeConfig typeconfig.Interface
 		var fixture *unstructured.Unstructured
 		for typeConfigName, typeConfigFixture := range typeConfigFixtures {
-			typeConfig := &fedv1a1.FederatedTypeConfig{}
-			err = client.Get(context.Background(), typeConfig, f.FederationSystemNamespace(), typeConfigName)
+			typeConfig := &fedv1b1.FederatedTypeConfig{}
+			err = client.Get(context.Background(), typeConfig, f.KubeFedSystemNamespace(), typeConfigName)
 			if errors.IsNotFound(err) {
 				continue
 			}
@@ -120,7 +120,7 @@ var _ = Describe("Placement", func() {
 		}()
 
 		// Check for removal of the propagated resource from all clusters
-		targetAPIResource := selectedTypeConfig.GetTarget()
+		targetAPIResource := selectedTypeConfig.GetTargetType()
 		targetKind := targetAPIResource.Kind
 		qualifiedName := util.NewQualifiedName(fedObject)
 		for clusterName, testCluster := range crudTester.TestClusters() {

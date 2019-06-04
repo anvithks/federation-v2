@@ -20,11 +20,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -34,6 +29,12 @@ import (
 	kubeclientset "k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/test/common"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
@@ -41,7 +42,7 @@ import (
 // TODO(marun) Replace the framework with the unmanaged
 // implementation.
 
-type FederationFrameworkImpl interface {
+type KubeFedFrameworkImpl interface {
 	BeforeEach()
 	AfterEach()
 
@@ -59,7 +60,7 @@ type FederationFrameworkImpl interface {
 	ClusterKubeClients(userAgent string) map[string]kubeclientset.Interface
 	ClusterNames(userAgent string) []string
 
-	FederationSystemNamespace() string
+	KubeFedSystemNamespace() string
 
 	// Name of the namespace for the current test to target
 	TestNamespaceName() string
@@ -69,10 +70,10 @@ type FederationFrameworkImpl interface {
 	setUpSyncControllerFixture(typeConfig typeconfig.Interface, namespacePlacement *metav1.APIResource) TestFixture
 }
 
-// FederationFramework provides an interface to a test federation so
+// KubeFedFramework provides an interface to a test control plane so
 // that the implementation can vary without affecting tests.
-type FederationFramework interface {
-	FederationFrameworkImpl
+type KubeFedFramework interface {
+	KubeFedFrameworkImpl
 
 	// Registering a fixture ensures it will be torn down after the
 	// current test has executed.
@@ -98,7 +99,7 @@ type FederationFramework interface {
 // The workaround is using a wrapper that performs late-binding on the
 // framework flavor.
 type frameworkWrapper struct {
-	impl                FederationFrameworkImpl
+	impl                KubeFedFrameworkImpl
 	baseName            string
 	namespaceTypeConfig typeconfig.Interface
 
@@ -106,7 +107,7 @@ type frameworkWrapper struct {
 	fixtures []TestFixture
 }
 
-func NewFederationFramework(baseName string) FederationFramework {
+func NewKubeFedFramework(baseName string) KubeFedFramework {
 	f := &frameworkWrapper{
 		baseName: baseName,
 		fixtures: []TestFixture{},
@@ -116,7 +117,7 @@ func NewFederationFramework(baseName string) FederationFramework {
 	return f
 }
 
-func (f *frameworkWrapper) framework() FederationFrameworkImpl {
+func (f *frameworkWrapper) framework() KubeFedFrameworkImpl {
 	if f.impl == nil {
 		f.impl = NewUnmanagedFramework(f.baseName)
 	}
@@ -180,8 +181,8 @@ func (f *frameworkWrapper) ClusterKubeClients(userAgent string) map[string]kubec
 	return f.framework().ClusterKubeClients(userAgent)
 }
 
-func (f *frameworkWrapper) FederationSystemNamespace() string {
-	return f.framework().FederationSystemNamespace()
+func (f *frameworkWrapper) KubeFedSystemNamespace() string {
+	return f.framework().KubeFedSystemNamespace()
 }
 
 func (f *frameworkWrapper) TestNamespaceName() string {
@@ -246,7 +247,7 @@ func (f *frameworkWrapper) EnsureTestFederatedNamespace(allClusters bool) *unstr
 	if err == nil {
 		return obj
 	}
-	if err != nil && !errors.IsNotFound(err) {
+	if !errors.IsNotFound(err) {
 		tl.Fatalf("Error retrieving %s %q: %v", apiResource.Kind, err)
 	}
 
@@ -278,8 +279,8 @@ func (f *frameworkWrapper) namespaceTypeConfigOrDie() typeconfig.Interface {
 		if err != nil {
 			tl.Fatalf("Error initializing dynamic client: %v", err)
 		}
-		typeConfig := &fedv1a1.FederatedTypeConfig{}
-		err = client.Get(context.Background(), typeConfig, f.FederationSystemNamespace(), util.NamespaceName)
+		typeConfig := &fedv1b1.FederatedTypeConfig{}
+		err = client.Get(context.Background(), typeConfig, f.KubeFedSystemNamespace(), util.NamespaceName)
 		if err != nil {
 			tl.Fatalf("Error retrieving federatedtypeconfig for %q: %v", util.NamespaceName, err)
 		}
@@ -306,7 +307,7 @@ func createNamespace(client kubeclientset.Interface, baseName string) (string, e
 	// TODO(marun) should all api calls be made 'robustly'?
 	var namespaceName string
 	if err := wait.PollImmediate(PollInterval, TestContext.SingleCallTimeout, func() (bool, error) {
-		namespace, err := client.Core().Namespaces().Create(namespaceObj)
+		namespace, err := client.CoreV1().Namespaces().Create(namespaceObj)
 		if err != nil {
 			Logf("Unexpected error while creating namespace: %v", err)
 			return false, nil

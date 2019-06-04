@@ -24,12 +24,12 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
 func TestSelectedClusterNames(t *testing.T) {
-	clusters := []*fedv1a1.FederatedCluster{
+	clusters := []*fedv1b1.KubeFedCluster{
 		{
 			ObjectMeta: metav1.ObjectMeta{
 				Name: "cluster1",
@@ -78,10 +78,14 @@ func TestSelectedClusterNames(t *testing.T) {
 				},
 			}
 			if testCase.clusterNames != nil {
-				unstructured.SetNestedStringSlice(obj.Object, testCase.clusterNames, util.SpecField, util.PlacementField, util.ClusterNamesField)
+				if err := util.SetClusterNames(obj, testCase.clusterNames); err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
 			}
 			if testCase.clusterSelector != nil {
-				unstructured.SetNestedStringMap(obj.Object, testCase.clusterSelector, util.SpecField, util.PlacementField, util.ClusterSelectorField, util.MatchLabelsField)
+				if err := unstructured.SetNestedStringMap(obj.Object, testCase.clusterSelector, util.SpecField, util.PlacementField, util.ClusterSelectorField, util.MatchLabelsField); err != nil {
+					t.Fatalf("Unexpected error: %v", err)
+				}
 			}
 
 			selectedNames, err := selectedClusterNames(obj, clusters)

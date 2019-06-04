@@ -23,7 +23,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
 	corev1 "k8s.io/api/core/v1"
@@ -32,18 +31,19 @@ import (
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog"
 
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	dnsv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/multiclusterdns/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	dnsv1a1 "sigs.k8s.io/kubefed/pkg/apis/multiclusterdns/v1alpha1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
 const (
 	allClustersKey = "ALL_CLUSTERS"
 )
 
-// Controller manages the ServiceDNSRecord objects in federation.
+// Controller manages ServiceDNSRecord resources in the host cluster.
 type Controller struct {
 	client genericclient.Client
 
@@ -51,10 +51,10 @@ type Controller struct {
 	// used when a new cluster becomes available.
 	clusterDeliverer *util.DelayingDeliverer
 
-	// informer for service object from members of federation.
+	// informer for service resources in member clusters
 	serviceInformer util.FederatedInformer
 
-	// informer for endpoint object from members of federation.
+	// informer for endpoint resources in member clusters
 	endpointInformer util.FederatedInformer
 
 	// Store for the ServiceDNSRecord objects
@@ -85,7 +85,7 @@ func StartController(config *util.ControllerConfig, stopChan <-chan struct{}) er
 	if config.MinimizeLatency {
 		controller.minimizeLatency()
 	}
-	glog.Infof("Starting ServiceDNS controller")
+	klog.Infof("Starting ServiceDNS controller")
 	controller.Run(stopChan)
 	return nil
 }
@@ -98,7 +98,7 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 		clusterAvailableDelay:   config.ClusterAvailableDelay,
 		clusterUnavailableDelay: config.ClusterUnavailableDelay,
 		smallDelay:              time.Second * 3,
-		fedNamespace:            config.FederationNamespace,
+		fedNamespace:            config.KubeFedNamespace,
 	}
 
 	s.worker = util.NewReconcileWorker(s.reconcile, util.WorkerTiming{
@@ -108,7 +108,7 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 	// Build deliverer for triggering cluster reconciliations.
 	s.clusterDeliverer = util.NewDelayingDeliverer()
 
-	// Informer for the ServiceDNSRecord resource in federation.
+	// Informer for ServiceDNSRecord resources in the host cluster
 	var err error
 	s.serviceDNSStore, s.serviceDNSController, err = util.NewGenericInformer(
 		config.KubeConfig,
@@ -124,15 +124,18 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 	// Informer for the Domain resource
 	s.domainStore, s.domainController, err = util.NewGenericInformer(
 		config.KubeConfig,
-		config.FederationNamespace,
+		config.KubeFedNamespace,
 		&dnsv1a1.Domain{},
 		util.NoResyncPeriod,
 		func(pkgruntime.Object) {
 			s.clusterDeliverer.DeliverAt(allClustersKey, nil, time.Now())
 		},
 	)
+	if err != nil {
+		return nil, err
+	}
 
-	// Federated serviceInformer for the service resource in members of federation.
+	// Federated informer for service resources in member clusters
 	s.serviceInformer, err = util.NewFederatedInformer(
 		config,
 		client,
@@ -145,12 +148,12 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 			Namespaced:   true},
 		s.worker.EnqueueObject,
 		&util.ClusterLifecycleHandlerFuncs{
-			ClusterAvailable: func(cluster *fedv1a1.FederatedCluster) {
+			ClusterAvailable: func(cluster *fedv1b1.KubeFedCluster) {
 				// When new cluster becomes available process all the target resources again.
 				s.clusterDeliverer.DeliverAt(allClustersKey, nil, time.Now().Add(s.clusterAvailableDelay))
 			},
 			// When a cluster becomes unavailable process all the target resources again.
-			ClusterUnavailable: func(cluster *fedv1a1.FederatedCluster, _ []interface{}) {
+			ClusterUnavailable: func(cluster *fedv1b1.KubeFedCluster, _ []interface{}) {
 				s.clusterDeliverer.DeliverAt(allClustersKey, nil, time.Now().Add(s.clusterUnavailableDelay))
 			},
 		},
@@ -214,7 +217,7 @@ func (c *Controller) Run(stopChan <-chan struct{}) {
 // synced with the corresponding api server.
 func (c *Controller) isSynced() bool {
 	if !c.serviceInformer.ClustersSynced() {
-		glog.V(2).Infof("Cluster list not synced")
+		klog.V(2).Infof("Cluster list not synced")
 		return false
 	}
 	clusters, err := c.serviceInformer.GetReadyClusters()
@@ -227,7 +230,7 @@ func (c *Controller) isSynced() bool {
 	}
 
 	if !c.endpointInformer.ClustersSynced() {
-		glog.V(2).Infof("Cluster list not synced")
+		klog.V(2).Infof("Cluster list not synced")
 		return false
 	}
 	clusters, err = c.endpointInformer.GetReadyClusters()
@@ -260,9 +263,9 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 
 	key := qualifiedName.String()
 
-	glog.V(4).Infof("Starting to reconcile ServiceDNS resource: %v", key)
+	klog.V(4).Infof("Starting to reconcile ServiceDNS resource: %v", key)
 	startTime := time.Now()
-	defer glog.V(4).Infof("Finished reconciling ServiceDNS resource %v (duration: %v)", key, time.Since(startTime))
+	defer klog.V(4).Infof("Finished reconciling ServiceDNS resource %v (duration: %v)", key, time.Since(startTime))
 
 	cachedObj, exist, err := c.serviceDNSStore.GetByKey(key)
 	if err != nil {
@@ -341,7 +344,7 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 				offlineClusterDNS := clusterDNS
 				offlineClusterDNS.LoadBalancer = corev1.LoadBalancerStatus{}
 				fedDNSStatus = append(fedDNSStatus, offlineClusterDNS)
-				glog.V(5).Infof("Cluster %s is Offline, Preserving previously available status for Service %s", cluster.Name, key)
+				klog.V(5).Infof("Cluster %s is Offline, Preserving previously available status for Service %s", cluster.Name, key)
 				break
 			}
 		}

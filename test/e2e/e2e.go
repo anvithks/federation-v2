@@ -19,10 +19,11 @@ package e2e
 import (
 	"testing"
 
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework/ginkgowrapper"
+	"k8s.io/klog"
 
-	"github.com/golang/glog"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
+	"sigs.k8s.io/kubefed/test/e2e/framework/ginkgowrapper"
+
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/config"
 	"github.com/onsi/gomega"
@@ -33,8 +34,8 @@ import (
 // This function is called on each Ginkgo node in parallel mode.
 func RunE2ETests(t *testing.T) {
 	gomega.RegisterFailHandler(ginkgowrapper.Fail)
-	glog.Infof("Starting e2e run %q on Ginkgo node %d", framework.RunId, config.GinkgoConfig.ParallelNode)
-	ginkgo.RunSpecs(t, "Federation e2e suite")
+	klog.Infof("Starting e2e run %q on Ginkgo node %d", framework.RunId, config.GinkgoConfig.ParallelNode)
+	ginkgo.RunSpecs(t, "KubeFed e2e suite")
 }
 
 // There are certain operations we only want to run once per overall test invocation
@@ -49,15 +50,13 @@ var _ = ginkgo.SynchronizedBeforeSuite(func() []byte {
 	// Run only on Ginkgo node 1
 
 	if framework.TestContext.InMemoryControllers {
-		// This supports a hybrid setup where the user asks for an unmanaged
-		// federation with in memory controllers. This means the k8s clusters
-		// are already running along with the federation and cluster registry
-		// API servers. This will then join the clusters and launch the
-		// required federation controllers e.g. cluster and sync controllers.
-		framework.SetUpUnmanagedFederation()
+		// Start the cluster controller to ensure clusters will be
+		// reported as healthy when running the control plane
+		// in-memory.
+		framework.SetUpControlPlane()
 	}
 	// Wait for readiness of registered clusters to ensure tests
-	// run against a healthy federation.
+	// run against a healthy control plane.
 	framework.WaitForUnmanagedClusterReadiness()
 
 	return nil
@@ -76,5 +75,5 @@ var _ = ginkgo.SynchronizedAfterSuite(func() {
 }, func() {
 	// Run only Ginkgo on node 1
 	framework.Logf("Running AfterSuite actions on node 1")
-	framework.TearDownUnmanagedFederation()
+	framework.TearDownControlPlane()
 })

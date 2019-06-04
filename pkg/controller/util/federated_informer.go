@@ -22,22 +22,23 @@ import (
 	"sync"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
-	fedcommon "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/common"
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	"github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
 	apiv1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog"
+
+	fedcommon "sigs.k8s.io/kubefed/pkg/apis/core/common"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	"sigs.k8s.io/kubefed/pkg/client/generic"
 )
 
 const (
 	clusterSyncPeriod = 10 * time.Minute
-	userAgentName     = "federation-controller"
+	userAgentName     = "kubefed-controller"
 )
 
 // An object with an origin information.
@@ -69,34 +70,42 @@ type FederatedReadOnlyStore interface {
 	// issues occur less often.	All users of the interface should assume
 	// that there may be significant delays in content updates of all kinds and write their
 	// code that it doesn't break if something is slightly out-of-sync.
-	ClustersSynced(clusters []*fedv1a1.FederatedCluster) bool
+	ClustersSynced(clusters []*fedv1b1.KubeFedCluster) bool
 }
 
-// An interface to access federation members and clients.
-type FederationView interface {
+// An interface to retrieve both KubeFedCluster resources and clients
+// to access the clusters they represent.
+type RegisteredClustersView interface {
 	// GetClientForCluster returns a client for the cluster, if present.
 	GetClientForCluster(clusterName string) (ResourceClient, error)
 
 	// GetUnreadyClusters returns a list of all clusters that are not ready yet.
-	GetUnreadyClusters() ([]*fedv1a1.FederatedCluster, error)
+	GetUnreadyClusters() ([]*fedv1b1.KubeFedCluster, error)
 
 	// GetReadyClusters returns all clusters for which the sub-informers are run.
-	GetReadyClusters() ([]*fedv1a1.FederatedCluster, error)
+	GetReadyClusters() ([]*fedv1b1.KubeFedCluster, error)
+
+	// GetClusters returns a list of all clusters.
+	GetClusters() ([]*fedv1b1.KubeFedCluster, error)
 
 	// GetReadyCluster returns the cluster with the given name, if found.
-	GetReadyCluster(name string) (*fedv1a1.FederatedCluster, bool, error)
+	GetReadyCluster(name string) (*fedv1b1.KubeFedCluster, bool, error)
 
 	// ClustersSynced returns true if the view is synced (for the first time).
 	ClustersSynced() bool
 }
 
-// A structure that combines an informer running against federated api server and listening for cluster updates
-// with multiple Kubernetes API informers (called target informers) running against federation members. Whenever a new
-// cluster is added to the federation an informer is created for it using TargetInformerFactory. Informers are stopped
-// when a cluster is either put offline of deleted. It is assumed that some controller keeps an eye on the cluster list
-// and thus the clusters in ETCD are up to date.
+// FederatedInformer provides access to clusters registered with a
+// KubeFed control plane and watches a given resource type in
+// registered clusters.
+//
+// Whenever a new cluster is registered with KubeFed, an informer is
+// created for it using TargetInformerFactory. Informers are stopped
+// when a cluster is either put offline of deleted. It is assumed that
+// some controller keeps an eye on the cluster list and thus the
+// clusters in ETCD are up to date.
 type FederatedInformer interface {
-	FederationView
+	RegisteredClustersView
 
 	// Returns a store created over all stores from target informers.
 	GetTargetStore() FederatedReadOnlyStore
@@ -112,12 +121,12 @@ type FederatedInformer interface {
 type FederatedInformerForTestOnly interface {
 	FederatedInformer
 
-	SetClientFactory(func(*fedv1a1.FederatedCluster) (ResourceClient, error))
+	SetClientFactory(func(*fedv1b1.KubeFedCluster) (ResourceClient, error))
 }
 
 // A function that should be used to create an informer on the target object. Store should use
 // cache.DeletionHandlingMetaNamespaceKeyFunc as a keying function.
-type TargetInformerFactory func(*fedv1a1.FederatedCluster, ResourceClient) (cache.Store, cache.Controller)
+type TargetInformerFactory func(*fedv1b1.KubeFedCluster, ResourceClient) (cache.Store, cache.Controller)
 
 // A structure with cluster lifecycle handler functions. Cluster is available (and ClusterAvailable is fired)
 // when it is created in federated etcd and ready. Cluster becomes unavailable (and ClusterUnavailable is fired)
@@ -125,13 +134,13 @@ type TargetInformerFactory func(*fedv1a1.FederatedCluster, ResourceClient) (cach
 // and ClusterUnavailable are fired.
 type ClusterLifecycleHandlerFuncs struct {
 	// Fired when the cluster becomes available.
-	ClusterAvailable func(*fedv1a1.FederatedCluster)
+	ClusterAvailable func(*fedv1b1.KubeFedCluster)
 	// Fired when the cluster becomes unavailable. The second arg contains data that was present
 	// in the cluster before deletion.
-	ClusterUnavailable func(*fedv1a1.FederatedCluster, []interface{})
+	ClusterUnavailable func(*fedv1b1.KubeFedCluster, []interface{})
 }
 
-// Builds a FederatedInformer for the given federation client and factory.
+// Builds a FederatedInformer for the given configuration.
 func NewFederatedInformer(
 	config *ControllerConfig,
 	client generic.Client,
@@ -139,14 +148,14 @@ func NewFederatedInformer(
 	triggerFunc func(pkgruntime.Object),
 	clusterLifecycle *ClusterLifecycleHandlerFuncs) (FederatedInformer, error) {
 
-	targetInformerFactory := func(cluster *fedv1a1.FederatedCluster, client ResourceClient) (cache.Store, cache.Controller) {
+	targetInformerFactory := func(cluster *fedv1b1.KubeFedCluster, client ResourceClient) (cache.Store, cache.Controller) {
 		return NewManagedResourceInformer(client, config.TargetNamespace, triggerFunc)
 	}
 
 	federatedInformer := &federatedInformerImpl{
 		targetInformerFactory: targetInformerFactory,
-		clientFactory: func(cluster *fedv1a1.FederatedCluster) (ResourceClient, error) {
-			config, err := BuildClusterConfig(cluster, client, config.FederationNamespace, config.ClusterNamespace)
+		clientFactory: func(cluster *fedv1b1.KubeFedCluster) (ResourceClient, error) {
+			config, err := BuildClusterConfig(cluster, client, config.KubeFedNamespace)
 			if err != nil {
 				return nil, err
 			}
@@ -158,13 +167,13 @@ func NewFederatedInformer(
 			return NewResourceClient(config, apiResource)
 		},
 		targetInformers: make(map[string]informer),
-		fedNamespace:    config.FederationNamespace,
+		fedNamespace:    config.KubeFedNamespace,
 	}
 
 	getClusterData := func(name string) []interface{} {
 		data, err := federatedInformer.GetTargetStore().ListFromCluster(name)
 		if err != nil {
-			glog.Errorf("Failed to list %s content: %v", name, err)
+			klog.Errorf("Failed to list %s content: %v", name, err)
 			return make([]interface{}, 0)
 		}
 		return data
@@ -173,12 +182,12 @@ func NewFederatedInformer(
 	var err error
 	federatedInformer.clusterInformer.store, federatedInformer.clusterInformer.controller, err = NewGenericInformerWithEventHandler(
 		config.KubeConfig,
-		config.FederationNamespace,
-		&fedv1a1.FederatedCluster{},
+		config.KubeFedNamespace,
+		&fedv1b1.KubeFedCluster{},
 		clusterSyncPeriod,
 		&cache.ResourceEventHandlerFuncs{
 			DeleteFunc: func(old interface{}) {
-				oldCluster, ok := old.(*fedv1a1.FederatedCluster)
+				oldCluster, ok := old.(*fedv1b1.KubeFedCluster)
 				if ok {
 					var data []interface{}
 					if clusterLifecycle.ClusterUnavailable != nil {
@@ -191,28 +200,28 @@ func NewFederatedInformer(
 				}
 			},
 			AddFunc: func(cur interface{}) {
-				curCluster, ok := cur.(*fedv1a1.FederatedCluster)
+				curCluster, ok := cur.(*fedv1b1.KubeFedCluster)
 				if !ok {
-					glog.Errorf("Cluster %v/%v not added; incorrect type", curCluster.Namespace, curCluster.Name)
+					klog.Errorf("Cluster %v/%v not added; incorrect type", curCluster.Namespace, curCluster.Name)
 				} else if IsClusterReady(&curCluster.Status) {
 					federatedInformer.addCluster(curCluster)
-					glog.Infof("Cluster %v/%v is ready", curCluster.Namespace, curCluster.Name)
+					klog.Infof("Cluster %v/%v is ready", curCluster.Namespace, curCluster.Name)
 					if clusterLifecycle.ClusterAvailable != nil {
 						clusterLifecycle.ClusterAvailable(curCluster)
 					}
 				} else {
-					glog.Infof("Cluster %v/%v not added; it is not ready.", curCluster.Namespace, curCluster.Name)
+					klog.Infof("Cluster %v/%v not added; it is not ready.", curCluster.Namespace, curCluster.Name)
 				}
 			},
 			UpdateFunc: func(old, cur interface{}) {
-				oldCluster, ok := old.(*fedv1a1.FederatedCluster)
+				oldCluster, ok := old.(*fedv1b1.KubeFedCluster)
 				if !ok {
-					glog.Errorf("Internal error: Cluster %v not updated.  Old cluster not of correct type.", old)
+					klog.Errorf("Internal error: Cluster %v not updated.  Old cluster not of correct type.", old)
 					return
 				}
-				curCluster, ok := cur.(*fedv1a1.FederatedCluster)
+				curCluster, ok := cur.(*fedv1b1.KubeFedCluster)
 				if !ok {
-					glog.Errorf("Internal error: Cluster %v not updated.  New cluster not of correct type.", cur)
+					klog.Errorf("Internal error: Cluster %v not updated.  New cluster not of correct type.", cur)
 					return
 				}
 				if IsClusterReady(&oldCluster.Status) != IsClusterReady(&curCluster.Status) || !reflect.DeepEqual(oldCluster.Spec, curCluster.Spec) || !reflect.DeepEqual(oldCluster.ObjectMeta.Annotations, curCluster.ObjectMeta.Annotations) {
@@ -232,7 +241,7 @@ func NewFederatedInformer(
 						}
 					}
 				} else {
-					glog.V(4).Infof("Cluster %v not updated to %v as ready status and specs are identical", oldCluster, curCluster)
+					klog.V(7).Infof("Cluster %v not updated to %v as ready status and specs are identical", oldCluster, curCluster)
 				}
 			},
 		},
@@ -240,7 +249,7 @@ func NewFederatedInformer(
 	return federatedInformer, err
 }
 
-func IsClusterReady(clusterStatus *fedv1a1.FederatedClusterStatus) bool {
+func IsClusterReady(clusterStatus *fedv1b1.KubeFedClusterStatus) bool {
 	for _, condition := range clusterStatus.Conditions {
 		if condition.Type == fedcommon.ClusterReady {
 			if condition.Status == apiv1.ConditionTrue {
@@ -270,9 +279,9 @@ type federatedInformerImpl struct {
 	targetInformers map[string]informer
 
 	// A function to build clients.
-	clientFactory func(*fedv1a1.FederatedCluster) (ResourceClient, error)
+	clientFactory func(*fedv1b1.KubeFedCluster) (ResourceClient, error)
 
-	// Namespace from which to source FederatedCluster resources
+	// Namespace from which to source KubeFedCluster resources
 	fedNamespace string
 }
 
@@ -284,14 +293,14 @@ type federatedStoreImpl struct {
 }
 
 func (f *federatedInformerImpl) Stop() {
-	glog.V(4).Infof("Stopping federated informer.")
+	klog.V(4).Infof("Stopping federated informer.")
 	f.Lock()
 	defer f.Unlock()
 
-	glog.V(4).Infof("... Closing cluster informer channel.")
+	klog.V(4).Infof("... Closing cluster informer channel.")
 	close(f.clusterInformer.stopChan)
 	for key, informer := range f.targetInformers {
-		glog.V(4).Infof("... Closing informer channel for %q.", key)
+		klog.V(4).Infof("... Closing informer channel for %q.", key)
 		close(informer.stopChan)
 		// Remove each informer after it has been stopped to prevent
 		// subsequent cluster deletion from attempting to double close
@@ -308,7 +317,7 @@ func (f *federatedInformerImpl) Start() {
 	go f.clusterInformer.controller.Run(f.clusterInformer.stopChan)
 }
 
-func (f *federatedInformerImpl) SetClientFactory(clientFactory func(*fedv1a1.FederatedCluster) (ResourceClient, error)) {
+func (f *federatedInformerImpl) SetClientFactory(clientFactory func(*fedv1b1.KubeFedCluster) (ResourceClient, error)) {
 	f.Lock()
 	defer f.Unlock()
 
@@ -324,9 +333,9 @@ func (f *federatedInformerImpl) GetClientForCluster(clusterName string) (Resourc
 
 func (f *federatedInformerImpl) getClientForClusterUnlocked(clusterName string) (ResourceClient, error) {
 	// No locking needed. Will happen in f.GetCluster.
-	glog.V(4).Infof("Getting clientset for cluster %q", clusterName)
+	klog.V(4).Infof("Getting clientset for cluster %q", clusterName)
 	if cluster, found, err := f.getReadyClusterUnlocked(clusterName); found && err == nil {
-		glog.V(4).Infof("Got clientset for cluster %q", clusterName)
+		klog.V(4).Infof("Got clientset for cluster %q", clusterName)
 		return f.clientFactory(cluster)
 	} else {
 		if err != nil {
@@ -336,14 +345,14 @@ func (f *federatedInformerImpl) getClientForClusterUnlocked(clusterName string) 
 	return nil, errors.Errorf("cluster %q not found", clusterName)
 }
 
-func (f *federatedInformerImpl) GetUnreadyClusters() ([]*fedv1a1.FederatedCluster, error) {
+func (f *federatedInformerImpl) GetUnreadyClusters() ([]*fedv1b1.KubeFedCluster, error) {
 	f.Lock()
 	defer f.Unlock()
 
 	items := f.clusterInformer.store.List()
-	result := make([]*fedv1a1.FederatedCluster, 0, len(items))
+	result := make([]*fedv1b1.KubeFedCluster, 0, len(items))
 	for _, item := range items {
-		if cluster, ok := item.(*fedv1a1.FederatedCluster); ok {
+		if cluster, ok := item.(*fedv1b1.KubeFedCluster); ok {
 			if !IsClusterReady(&cluster.Status) {
 				result = append(result, cluster)
 			}
@@ -355,15 +364,25 @@ func (f *federatedInformerImpl) GetUnreadyClusters() ([]*fedv1a1.FederatedCluste
 }
 
 // GetReadyClusters returns all clusters for which the sub-informers are run.
-func (f *federatedInformerImpl) GetReadyClusters() ([]*fedv1a1.FederatedCluster, error) {
+func (f *federatedInformerImpl) GetReadyClusters() ([]*fedv1b1.KubeFedCluster, error) {
+	return f.getClusters(true)
+}
+
+// GetClusters returns all clusters regardless of ready state.
+func (f *federatedInformerImpl) GetClusters() ([]*fedv1b1.KubeFedCluster, error) {
+	return f.getClusters(false)
+}
+
+// GetReadyClusters returns only ready clusters if onlyReady is true and all clusters otherwise.
+func (f *federatedInformerImpl) getClusters(onlyReady bool) ([]*fedv1b1.KubeFedCluster, error) {
 	f.Lock()
 	defer f.Unlock()
 
 	items := f.clusterInformer.store.List()
-	result := make([]*fedv1a1.FederatedCluster, 0, len(items))
+	result := make([]*fedv1b1.KubeFedCluster, 0, len(items))
 	for _, item := range items {
-		if cluster, ok := item.(*fedv1a1.FederatedCluster); ok {
-			if IsClusterReady(&cluster.Status) {
+		if cluster, ok := item.(*fedv1b1.KubeFedCluster); ok {
+			if !onlyReady || IsClusterReady(&cluster.Status) {
 				result = append(result, cluster)
 			}
 		} else {
@@ -374,16 +393,16 @@ func (f *federatedInformerImpl) GetReadyClusters() ([]*fedv1a1.FederatedCluster,
 }
 
 // GetCluster returns the cluster with the given name, if found.
-func (f *federatedInformerImpl) GetReadyCluster(name string) (*fedv1a1.FederatedCluster, bool, error) {
+func (f *federatedInformerImpl) GetReadyCluster(name string) (*fedv1b1.KubeFedCluster, bool, error) {
 	f.Lock()
 	defer f.Unlock()
 	return f.getReadyClusterUnlocked(name)
 }
 
-func (f *federatedInformerImpl) getReadyClusterUnlocked(name string) (*fedv1a1.FederatedCluster, bool, error) {
+func (f *federatedInformerImpl) getReadyClusterUnlocked(name string) (*fedv1b1.KubeFedCluster, bool, error) {
 	key := fmt.Sprintf("%s/%s", f.fedNamespace, name)
 	if obj, exist, err := f.clusterInformer.store.GetByKey(key); exist && err == nil {
-		if cluster, ok := obj.(*fedv1a1.FederatedCluster); ok {
+		if cluster, ok := obj.(*fedv1b1.KubeFedCluster); ok {
 			if IsClusterReady(&cluster.Status) {
 				return cluster, true, nil
 			}
@@ -403,7 +422,7 @@ func (f *federatedInformerImpl) ClustersSynced() bool {
 }
 
 // Adds the given cluster to federated informer.
-func (f *federatedInformerImpl) addCluster(cluster *fedv1a1.FederatedCluster) {
+func (f *federatedInformerImpl) addCluster(cluster *fedv1b1.KubeFedCluster) {
 	f.Lock()
 	defer f.Unlock()
 	name := cluster.Name
@@ -418,12 +437,12 @@ func (f *federatedInformerImpl) addCluster(cluster *fedv1a1.FederatedCluster) {
 		go targetInformer.controller.Run(targetInformer.stopChan)
 	} else {
 		// TODO: create also an event for cluster.
-		glog.Errorf("Failed to create a client for cluster: %v", err)
+		klog.Errorf("Failed to create a client for cluster: %v", err)
 	}
 }
 
 // Removes the cluster from federated informer.
-func (f *federatedInformerImpl) deleteCluster(cluster *fedv1a1.FederatedCluster) {
+func (f *federatedInformerImpl) deleteCluster(cluster *fedv1b1.KubeFedCluster) {
 	f.Lock()
 	defer f.Unlock()
 	name := cluster.Name
@@ -504,7 +523,7 @@ func (fs *federatedStoreImpl) GetKeyFor(item interface{}) string {
 
 // Checks whether stores for all clusters form the lists (and only these) are there and
 // are synced.
-func (fs *federatedStoreImpl) ClustersSynced(clusters []*fedv1a1.FederatedCluster) bool {
+func (fs *federatedStoreImpl) ClustersSynced(clusters []*fedv1b1.KubeFedCluster) bool {
 
 	// Get the list of informers to check under a lock and check it outside.
 	okSoFar, informersToCheck := func() (bool, []informer) {

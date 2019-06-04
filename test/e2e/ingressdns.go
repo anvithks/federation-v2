@@ -26,17 +26,17 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
 
-	dnsv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/multiclusterdns/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/dnsendpoint"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
+	dnsv1a1 "sigs.k8s.io/kubefed/pkg/apis/multiclusterdns/v1alpha1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/dnsendpoint"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
 var _ = Describe("IngressDNS", func() {
-	f := framework.NewFederationFramework("multicluster-ingress-dns")
+	f := framework.NewKubeFedFramework("multicluster-ingress-dns")
 	tl := framework.NewE2ELogger()
 
 	const userAgent = "test-ingress-dns"
@@ -139,7 +139,7 @@ var _ = Describe("IngressDNS", func() {
 	})
 })
 
-func createClusterIngress(f framework.FederationFramework, name, namespace string, ingressDNSStatus *dnsv1a1.IngressDNSRecordStatus) *dnsv1a1.IngressDNSRecordStatus {
+func createClusterIngress(f framework.KubeFedFramework, name, namespace string, ingressDNSStatus *dnsv1a1.IngressDNSRecordStatus) *dnsv1a1.IngressDNSRecordStatus {
 	const userAgent = "test-ingress-dns"
 
 	ingress := common.NewIngressObject(name, namespace)
@@ -158,7 +158,9 @@ func createClusterIngress(f framework.FederationFramework, name, namespace strin
 		createdIngress, err := client.ExtensionsV1beta1().Ingresses(namespace).Create(ingress)
 		framework.ExpectNoError(err, "Error creating ingress in cluster %q", clusterName)
 
-		createdIngress.Status = extv1b1.IngressStatus{lbStatus}
+		createdIngress.Status = extv1b1.IngressStatus{
+			LoadBalancer: lbStatus,
+		}
 
 		// Fake out provisioning LoadBalancer by updating the ingress status in member cluster.
 		_, err = client.ExtensionsV1beta1().Ingresses(namespace).UpdateStatus(createdIngress)

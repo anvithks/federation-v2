@@ -19,8 +19,9 @@ package planner
 import (
 	"testing"
 
-	fedschedulingv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/scheduling/v1alpha1"
 	"github.com/stretchr/testify/assert"
+
+	fedschedulingv1a1 "sigs.k8s.io/kubefed/pkg/apis/scheduling/v1alpha1"
 )
 
 func doCheck(t *testing.T, pref map[string]fedschedulingv1a1.ClusterPreferences, replicas int64, clusters []string, expected map[string]int64) {
@@ -30,7 +31,8 @@ func doCheck(t *testing.T, pref map[string]fedschedulingv1a1.ClusterPreferences,
 			TotalReplicas: int32(replicas),
 		},
 	})
-	plan, overflow := planer.Plan(clusters, map[string]int64{}, map[string]int64{}, "")
+	plan, overflow, err := planer.Plan(clusters, map[string]int64{}, map[string]int64{}, "")
+	assert.Nil(t, err)
 	assert.EqualValues(t, expected, plan)
 	assert.Equal(t, 0, len(overflow))
 }
@@ -43,7 +45,8 @@ func doCheckWithExisting(t *testing.T, pref map[string]fedschedulingv1a1.Cluster
 			TotalReplicas: int32(replicas),
 		},
 	})
-	plan, overflow := planer.Plan(clusters, existing, map[string]int64{}, "")
+	plan, overflow, err := planer.Plan(clusters, existing, map[string]int64{}, "")
+	assert.Nil(t, err)
 	assert.Equal(t, 0, len(overflow))
 	assert.EqualValues(t, expected, plan)
 }
@@ -60,7 +63,8 @@ func doCheckWithExistingAndCapacity(t *testing.T, rebalance bool, pref map[strin
 			TotalReplicas: int32(replicas),
 		},
 	})
-	plan, overflow := planer.Plan(clusters, existing, capacity, "")
+	plan, overflow, err := planer.Plan(clusters, existing, capacity, "")
+	assert.Nil(t, err)
 	assert.EqualValues(t, expected, plan)
 	assert.Equal(t, expectedOverflow, overflow)
 }

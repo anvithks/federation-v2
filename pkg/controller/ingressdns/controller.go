@@ -23,7 +23,6 @@ import (
 	"sort"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
 	corev1 "k8s.io/api/core/v1"
@@ -33,18 +32,19 @@ import (
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog"
 
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	dnsv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/multiclusterdns/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	dnsv1a1 "sigs.k8s.io/kubefed/pkg/apis/multiclusterdns/v1alpha1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
 const (
 	allClustersKey = "ALL_CLUSTERS"
 )
 
-// Controller manages the IngressDNSRecord objects in federation.
+// Controller manages the IngressDNSRecord objects in the host cluster.
 type Controller struct {
 	client genericclient.Client
 
@@ -52,7 +52,7 @@ type Controller struct {
 	// used when a new cluster becomes available.
 	clusterDeliverer *util.DelayingDeliverer
 
-	// informer for ingress object from members of federation.
+	// informer for ingress resources in member clusters
 	ingressFederatedInformer util.FederatedInformer
 
 	// Store for the IngressDNSRecord objects
@@ -76,7 +76,7 @@ func StartController(config *util.ControllerConfig, stopChan <-chan struct{}) er
 	if config.MinimizeLatency {
 		controller.minimizeLatency()
 	}
-	glog.Infof("Starting IngressDNS controller")
+	klog.Infof("Starting IngressDNS controller")
 	controller.Run(stopChan)
 	return nil
 }
@@ -98,7 +98,7 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 	// Build deliverer for triggering cluster reconciliations.
 	s.clusterDeliverer = util.NewDelayingDeliverer()
 
-	// Informer for the IngressDNSRecord resource in federation.
+	// Informer for the IngressDNSRecord resources in the host cluster
 	var err error
 	s.ingressDNSStore, s.ingressDNSController, err = util.NewGenericInformer(
 		config.KubeConfig,
@@ -111,7 +111,7 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 		return nil, err
 	}
 
-	// Federated informer for the ingress resource in members of federation.
+	// Federated informer for ingress resources in members clusters
 	s.ingressFederatedInformer, err = util.NewFederatedInformer(
 		config,
 		client,
@@ -127,12 +127,12 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 		},
 
 		&util.ClusterLifecycleHandlerFuncs{
-			ClusterAvailable: func(cluster *fedv1a1.FederatedCluster) {
+			ClusterAvailable: func(cluster *fedv1b1.KubeFedCluster) {
 				// When new cluster becomes available process all the target resources again.
 				s.clusterDeliverer.DeliverAt(allClustersKey, nil, time.Now().Add(s.clusterAvailableDelay))
 			},
 			// When a cluster becomes unavailable process all the target resources again.
-			ClusterUnavailable: func(cluster *fedv1a1.FederatedCluster, _ []interface{}) {
+			ClusterUnavailable: func(cluster *fedv1b1.KubeFedCluster, _ []interface{}) {
 				s.clusterDeliverer.DeliverAt(allClustersKey, nil, time.Now().Add(s.clusterUnavailableDelay))
 			},
 		},
@@ -174,7 +174,7 @@ func (c *Controller) Run(stopChan <-chan struct{}) {
 // synced with the corresponding api server.
 func (c *Controller) isSynced() bool {
 	if !c.ingressFederatedInformer.ClustersSynced() {
-		glog.V(2).Infof("Cluster list not synced")
+		klog.V(2).Infof("Cluster list not synced")
 		return false
 	}
 	clusters, err := c.ingressFederatedInformer.GetReadyClusters()
@@ -207,9 +207,9 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 
 	key := qualifiedName.String()
 
-	glog.V(2).Infof("Starting to reconcile IngressDNS resource: %v", key)
+	klog.V(2).Infof("Starting to reconcile IngressDNS resource: %v", key)
 	startTime := time.Now()
-	defer glog.V(2).Infof("Finished reconciling IngressDNS resource %v (duration: %v)", key, time.Since(startTime))
+	defer klog.V(2).Infof("Finished reconciling IngressDNS resource %v (duration: %v)", key, time.Since(startTime))
 
 	cachedIngressDNSObj, exist, err := c.ingressDNSStore.GetByKey(key)
 	if err != nil {

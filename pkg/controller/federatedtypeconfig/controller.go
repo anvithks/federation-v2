@@ -20,36 +20,32 @@ import (
 	"context"
 	"sync"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	pkgruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/sets"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	corev1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	statuscontroller "github.com/kubernetes-sigs/federation-v2/pkg/controller/status"
-	synccontroller "github.com/kubernetes-sigs/federation-v2/pkg/controller/sync"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
+	corev1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	statuscontroller "sigs.k8s.io/kubefed/pkg/controller/status"
+	synccontroller "sigs.k8s.io/kubefed/pkg/controller/sync"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
-const finalizer string = "core.federation.k8s.io/federated-type-config"
+const finalizer string = "core.kubefed.k8s.io/federated-type-config"
 
-// Controller manages the FederatedTypeConfig objects in federation.
+// The FederatedTypeConfig controller configures sync and status
+// controllers in response to FederatedTypeConfig resources in the
+// KubeFed system namespace.
 type Controller struct {
 	// Arguments to use when starting new controllers
 	controllerConfig *util.ControllerConfig
-
-	// The federated namespace api resource will be needed to start
-	// sync controllers for namespaced federated types.  The placement
-	// for a federated namespace is used in determining the placement
-	// of resources contained by that namespace.
-	fedNamespaceAPIResource *metav1.APIResource
 
 	client genericclient.Client
 
@@ -71,7 +67,7 @@ func StartController(config *util.ControllerConfig, stopChan <-chan struct{}) er
 	if err != nil {
 		return err
 	}
-	glog.Infof("Starting FederatedTypeConfig controller")
+	klog.Infof("Starting FederatedTypeConfig controller")
 	controller.Run(stopChan)
 	return nil
 }
@@ -79,7 +75,7 @@ func StartController(config *util.ControllerConfig, stopChan <-chan struct{}) er
 // newController returns a new controller to manage FederatedTypeConfig objects.
 func newController(config *util.ControllerConfig) (*Controller, error) {
 	userAgent := "FederatedTypeConfig"
-	kubeConfig := config.KubeConfig
+	kubeConfig := restclient.CopyConfig(config.KubeConfig)
 	restclient.AddUserAgent(kubeConfig, userAgent)
 	genericclient, err := genericclient.New(kubeConfig)
 	if err != nil {
@@ -94,13 +90,13 @@ func newController(config *util.ControllerConfig) (*Controller, error) {
 
 	c.worker = util.NewReconcileWorker(c.reconcile, util.WorkerTiming{})
 
-	// Only watch the federation namespace to ensure
+	// Only watch the KubeFed namespace to ensure
 	// restrictive authz can be applied to a namespaced
 	// control plane.
 	c.store, c.controller, err = util.NewGenericInformer(
-		config.KubeConfig,
-		config.FederationNamespace,
-		&corev1a1.FederatedTypeConfig{},
+		kubeConfig,
+		config.KubeFedNamespace,
+		&corev1b1.FederatedTypeConfig{},
 		util.NoResyncPeriod,
 		c.worker.EnqueueObject,
 	)
@@ -133,30 +129,23 @@ func (c *Controller) Run(stopChan <-chan struct{}) {
 func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.ReconciliationStatus {
 	key := qualifiedName.String()
 
-	glog.V(3).Infof("Running reconcile FederatedTypeConfig for %q", key)
+	klog.V(3).Infof("Running reconcile FederatedTypeConfig for %q", key)
 
-	cachedObj, exist, err := c.store.GetByKey(key)
+	cachedObj, err := c.objCopyFromCache(key)
 	if err != nil {
-		runtime.HandleError(errors.Wrapf(err, "Failed to query FederatedTypeConfig store for %q", key))
 		return util.StatusError
 	}
-	if !exist {
+
+	if cachedObj == nil {
 		return util.StatusAllOK
 	}
-	typeConfig := cachedObj.(*corev1a1.FederatedTypeConfig)
+	typeConfig := cachedObj.(*corev1b1.FederatedTypeConfig)
 
 	// TODO(marun) Perform this defaulting in a webhook
-	corev1a1.SetFederatedTypeConfigDefaults(typeConfig)
+	corev1b1.SetFederatedTypeConfigDefaults(typeConfig)
 
-	// TODO(marun) Replace with validation webhook
-	err = typeconfig.CheckTypeConfigName(typeConfig)
-	if err != nil {
-		runtime.HandleError(err)
-		return util.StatusError
-	}
-
-	syncEnabled := typeConfig.Spec.PropagationEnabled
-	statusEnabled := typeConfig.Spec.EnableStatus
+	syncEnabled := typeConfig.GetPropagationEnabled()
+	statusEnabled := typeConfig.GetStatusEnabled()
 
 	limitedScope := c.controllerConfig.TargetNamespace != metav1.NamespaceAll
 	if limitedScope && syncEnabled && !typeConfig.GetNamespaced() {
@@ -166,12 +155,16 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 			c.lock.Lock()
 			c.stopChannels[typeConfig.Name] = holderChan
 			c.lock.Unlock()
-			glog.Infof("Skipping start of sync & status controller for cluster-scoped resource %q. It is not required for a namespaced federation control plane.", typeConfig.GetFederatedType().Kind)
+			klog.Infof("Skipping start of sync & status controller for cluster-scoped resource %q. It is not required for a namespaced KubeFed control plane.", typeConfig.GetFederatedType().Kind)
 		}
 
 		typeConfig.Status.ObservedGeneration = typeConfig.Generation
-		typeConfig.Status.PropagationController = corev1a1.ControllerStatusNotRunning
-		typeConfig.Status.StatusController = corev1a1.ControllerStatusNotRunning
+		typeConfig.Status.PropagationController = corev1b1.ControllerStatusNotRunning
+
+		if typeConfig.Status.StatusController == nil {
+			typeConfig.Status.StatusController = new(corev1b1.ControllerStatus)
+		}
+		*typeConfig.Status.StatusController = corev1b1.ControllerStatusNotRunning
 		err = c.client.UpdateStatus(context.TODO(), typeConfig)
 		if err != nil {
 			runtime.HandleError(errors.Wrapf(err, "Could not update status fields of the CRD: %q", key))
@@ -193,6 +186,11 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 			c.stopController(statusKey, statusStopChan)
 		}
 
+		if typeConfig.IsNamespace() {
+			klog.Infof("Reconciling all namespaced FederatedTypeConfig resources on deletion of %q", key)
+			c.reconcileOnNamespaceFTCUpdate()
+		}
+
 		err := c.removeFinalizer(typeConfig)
 		if err != nil {
 			runtime.HandleError(errors.Wrapf(err, "Failed to remove finalizer from FederatedTypeConfig %q", key))
@@ -201,14 +199,20 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 		return util.StatusAllOK
 	}
 
-	err = c.ensureFinalizer(typeConfig)
+	updated, err := c.ensureFinalizer(typeConfig)
 	if err != nil {
 		runtime.HandleError(errors.Wrapf(err, "Failed to ensure finalizer for FederatedTypeConfig %q", key))
 		return util.StatusError
+	} else if updated && typeConfig.IsNamespace() {
+		// Detected creation of the namespace FTC. If there are existing FTCs
+		// which did not start their sync controllers due to the lack of a
+		// namespace FTC, then reconcile them now so they can start.
+		klog.Infof("Reconciling all namespaced FederatedTypeConfig resources on finalizer update for %q", key)
+		c.reconcileOnNamespaceFTCUpdate()
 	}
 
 	startNewSyncController := !syncRunning && syncEnabled
-	stopSyncController := syncRunning && !syncEnabled
+	stopSyncController := syncRunning && (!syncEnabled || (typeConfig.GetNamespaced() && !c.namespaceFTCExists()))
 	if startNewSyncController {
 		if err := c.startSyncController(typeConfig); err != nil {
 			runtime.HandleError(err)
@@ -230,15 +234,22 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 	}
 
 	typeConfig.Status.ObservedGeneration = typeConfig.Generation
-	if syncRunning {
-		typeConfig.Status.PropagationController = corev1a1.ControllerStatusRunning
+	syncControllerRunning := startNewSyncController || (syncRunning && !stopSyncController)
+	if syncControllerRunning {
+		typeConfig.Status.PropagationController = corev1b1.ControllerStatusRunning
 	} else {
-		typeConfig.Status.PropagationController = corev1a1.ControllerStatusNotRunning
+		typeConfig.Status.PropagationController = corev1b1.ControllerStatusNotRunning
 	}
-	if statusRunning {
-		typeConfig.Status.StatusController = corev1a1.ControllerStatusRunning
+
+	if typeConfig.Status.StatusController == nil {
+		typeConfig.Status.StatusController = new(corev1b1.ControllerStatus)
+	}
+
+	statusControllerRunning := startNewStatusController || (statusRunning && !stopStatusController)
+	if statusControllerRunning {
+		*typeConfig.Status.StatusController = corev1b1.ControllerStatusRunning
 	} else {
-		typeConfig.Status.StatusController = corev1a1.ControllerStatusNotRunning
+		*typeConfig.Status.StatusController = corev1b1.ControllerStatusNotRunning
 	}
 	err = c.client.UpdateStatus(context.TODO(), typeConfig)
 	if err != nil {
@@ -246,6 +257,19 @@ func (c *Controller) reconcile(qualifiedName util.QualifiedName) util.Reconcilia
 		return util.StatusError
 	}
 	return util.StatusAllOK
+}
+
+func (c *Controller) objCopyFromCache(key string) (pkgruntime.Object, error) {
+	cachedObj, exist, err := c.store.GetByKey(key)
+	if err != nil {
+		wrappedErr := errors.Wrapf(err, "Failed to query FederatedTypeConfig store for %q", key)
+		runtime.HandleError(wrappedErr)
+		return nil, err
+	}
+	if !exist {
+		return nil, nil
+	}
+	return cachedObj.(pkgruntime.Object).DeepCopyObject(), nil
 }
 
 func (c *Controller) shutDown() {
@@ -266,39 +290,39 @@ func (c *Controller) getStopChannel(name string) (chan struct{}, bool) {
 	return stopChan, ok
 }
 
-func (c *Controller) startSyncController(tc *corev1a1.FederatedTypeConfig) error {
+func (c *Controller) startSyncController(tc *corev1b1.FederatedTypeConfig) error {
 	// TODO(marun) Consider using a shared informer for federated
 	// namespace that can be shared between all controllers of a
-	// cluster-scoped federation control plane.  A namespace-scoped
+	// cluster-scoped KubeFed control plane.  A namespace-scoped
 	// control plane would still have to use a non-shared informer due
 	// to it not being possible to limit its scope.
+	kind := tc.Spec.FederatedType.Kind
 	fedNamespaceAPIResource, err := c.getFederatedNamespaceAPIResource()
 	if err != nil {
-		return err
+		return errors.Wrapf(err, "Unable to start sync controller for %q due to missing FederatedTypeConfig for namespaces", kind)
 	}
-	kind := tc.Spec.FederatedType.Kind
 	stopChan := make(chan struct{})
-	err = synccontroller.StartFederationSyncController(c.controllerConfig, stopChan, tc, fedNamespaceAPIResource)
+	err = synccontroller.StartKubeFedSyncController(c.controllerConfig, stopChan, tc, fedNamespaceAPIResource)
 	if err != nil {
 		close(stopChan)
 		return errors.Wrapf(err, "Error starting sync controller for %q", kind)
 	}
-	glog.Infof("Started sync controller for %q", kind)
+	klog.Infof("Started sync controller for %q", kind)
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.stopChannels[tc.Name] = stopChan
 	return nil
 }
 
-func (c *Controller) startStatusController(statusKey string, tc *corev1a1.FederatedTypeConfig) error {
+func (c *Controller) startStatusController(statusKey string, tc *corev1b1.FederatedTypeConfig) error {
 	kind := tc.Spec.FederatedType.Kind
 	stopChan := make(chan struct{})
-	err := statuscontroller.StartFederationStatusController(c.controllerConfig, stopChan, tc)
+	err := statuscontroller.StartKubeFedStatusController(c.controllerConfig, stopChan, tc)
 	if err != nil {
 		close(stopChan)
 		return errors.Wrapf(err, "Error starting status controller for %q", kind)
 	}
-	glog.Infof("Started status controller for %q", kind)
+	klog.Infof("Started status controller for %q", kind)
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	c.stopChannels[statusKey] = stopChan
@@ -306,28 +330,29 @@ func (c *Controller) startStatusController(statusKey string, tc *corev1a1.Federa
 }
 
 func (c *Controller) stopController(key string, stopChan chan struct{}) {
-	glog.Infof("Stopping controller for %q", key)
+	klog.Infof("Stopping controller for %q", key)
 	close(stopChan)
 	c.lock.Lock()
 	defer c.lock.Unlock()
 	delete(c.stopChannels, key)
 }
 
-func (c *Controller) ensureFinalizer(tc *corev1a1.FederatedTypeConfig) error {
+func (c *Controller) ensureFinalizer(tc *corev1b1.FederatedTypeConfig) (bool, error) {
 	accessor, err := meta.Accessor(tc)
 	if err != nil {
-		return err
+		return false, err
 	}
 	finalizers := sets.NewString(accessor.GetFinalizers()...)
 	if finalizers.Has(finalizer) {
-		return nil
+		return false, nil
 	}
 	finalizers.Insert(finalizer)
 	accessor.SetFinalizers(finalizers.List())
-	return err
+	err = c.client.Update(context.TODO(), tc)
+	return true, err
 }
 
-func (c *Controller) removeFinalizer(tc *corev1a1.FederatedTypeConfig) error {
+func (c *Controller) removeFinalizer(tc *corev1b1.FederatedTypeConfig) error {
 	accessor, err := meta.Accessor(tc)
 	if err != nil {
 		return err
@@ -338,23 +363,21 @@ func (c *Controller) removeFinalizer(tc *corev1a1.FederatedTypeConfig) error {
 	}
 	finalizers.Delete(finalizer)
 	accessor.SetFinalizers(finalizers.List())
-	err = c.client.UpdateStatus(context.TODO(), tc)
+	err = c.client.Update(context.TODO(), tc)
 	return err
 }
 
-func (c *Controller) getFederatedNamespaceAPIResource() (*metav1.APIResource, error) {
-	// TODO(marun) Document the requirement to restart the controller
-	// manager if the federated namespace resource changes.
+func (c *Controller) namespaceFTCExists() bool {
+	_, err := c.getFederatedNamespaceAPIResource()
+	return err == nil
+}
 
+func (c *Controller) getFederatedNamespaceAPIResource() (*metav1.APIResource, error) {
 	c.lock.Lock()
 	defer c.lock.Unlock()
 
-	if c.fedNamespaceAPIResource != nil {
-		return c.fedNamespaceAPIResource, nil
-	}
-
 	qualifiedName := util.QualifiedName{
-		Namespace: c.controllerConfig.FederationNamespace,
+		Namespace: c.controllerConfig.KubeFedNamespace,
 		Name:      util.NamespaceName,
 	}
 	key := qualifiedName.String()
@@ -365,8 +388,16 @@ func (c *Controller) getFederatedNamespaceAPIResource() (*metav1.APIResource, er
 	if !exists {
 		return nil, errors.Errorf("Unable to find %q in the informer cache", key)
 	}
-	namespaceTypeConfig := cachedObj.(*corev1a1.FederatedTypeConfig)
+	namespaceTypeConfig := cachedObj.(*corev1b1.FederatedTypeConfig)
 	apiResource := namespaceTypeConfig.GetFederatedType()
-	c.fedNamespaceAPIResource = &apiResource
-	return c.fedNamespaceAPIResource, nil
+	return &apiResource, nil
+}
+
+func (c *Controller) reconcileOnNamespaceFTCUpdate() {
+	for _, cachedObj := range c.store.List() {
+		typeConfig := cachedObj.(*corev1b1.FederatedTypeConfig)
+		if typeConfig.GetNamespaced() && !typeConfig.IsNamespace() {
+			c.worker.EnqueueObject(typeConfig)
+		}
+	}
 }

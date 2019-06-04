@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// A binary that can morph into all of the other federation-v2 binaries. You can
+// A binary that can morph into all of the other kubefed binaries. You can
 // also soft-link to it busybox style.
 //
 package main
@@ -31,12 +31,15 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
+
+	genericapiserver "k8s.io/apiserver/pkg/server"
 	utilflag "k8s.io/apiserver/pkg/util/flag"
 	"k8s.io/apiserver/pkg/util/logs"
 	_ "k8s.io/client-go/plugin/pkg/client/auth" // Load all client auth plugins for GCP, Azure, Openstack, etc
 
-	"github.com/kubernetes-sigs/federation-v2/cmd/controller-manager/app"
-	"github.com/kubernetes-sigs/federation-v2/pkg/kubefed2"
+	"sigs.k8s.io/kubefed/cmd/controller-manager/app"
+	"sigs.k8s.io/kubefed/pkg/kubefedctl"
+	"sigs.k8s.io/kubefed/pkg/webhook"
 )
 
 func main() {
@@ -75,21 +78,27 @@ func commandFor(basename string, defaultCommand *cobra.Command, commands []func(
 
 // NewHyperFedCommand is the entry point for hyperfed
 func NewHyperFedCommand() (*cobra.Command, []func() *cobra.Command) {
-	controller := func() *cobra.Command { return app.NewControllerManagerCommand() }
-	kubefed2Cmd := func() *cobra.Command { return kubefed2.NewKubeFed2Command(os.Stdout) }
+	stopChan := genericapiserver.SetupSignalHandler()
+
+	controller := func() *cobra.Command { return app.NewControllerManagerCommand(stopChan) }
+	kubefedctlCmd := func() *cobra.Command { return kubefedctl.NewKubeFedCtlCommand(os.Stdout) }
+	webhookCmd := func() *cobra.Command { return webhook.NewWebhookCommand(stopChan) }
 
 	commandFns := []func() *cobra.Command{
 		controller,
-		kubefed2Cmd,
+		kubefedctlCmd,
+		webhookCmd,
 	}
 
 	makeSymlinksFlag := false
 	cmd := &cobra.Command{
-		Use:   "hyperfed",
-		Short: "Combined binary for federation-v2",
+		Use:   "hyperfed COMMAND",
+		Short: "Combined binary for KubeFed",
 		Run: func(cmd *cobra.Command, args []string) {
 			if len(args) != 0 || !makeSymlinksFlag {
-				cmd.Help()
+				if err := cmd.Help(); err != nil {
+					fmt.Fprintf(os.Stderr, "%v\n", err.Error())
+				}
 				os.Exit(1)
 			}
 
@@ -99,7 +108,11 @@ func NewHyperFedCommand() (*cobra.Command, []func() *cobra.Command) {
 		},
 	}
 	cmd.Flags().BoolVar(&makeSymlinksFlag, "make-symlinks", makeSymlinksFlag, "create a symlink for each server in current directory")
-	cmd.Flags().MarkHidden("make-symlinks") // hide this flag from appearing in servers' usage output
+
+	// hide this flag from appearing in servers' usage output
+	if err := cmd.Flags().MarkHidden("make-symlinks"); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err.Error())
+	}
 
 	for i := range commandFns {
 		cmd.AddCommand(commandFns[i]())

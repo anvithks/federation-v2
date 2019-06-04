@@ -25,19 +25,19 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
 var _ = Describe("Leader Elector", func() {
-	f := framework.NewFederationFramework("leaderelection")
+	f := framework.NewKubeFedFramework("leaderelection")
 	tl := framework.NewE2ELogger()
 
 	It("should chose secondary instance, primary goes down", func() {
 		if framework.TestContext.LimitedScope {
-			framework.Skipf("Testing of leader election requires an isolated test namespace which is only possible with cluster-scoped federation")
+			framework.Skipf("Testing of leader election requires an isolated test namespace which is only possible with a cluster-scoped control plane")
 		}
 
 		const leaderIdentifier = "promoted as leader"
@@ -81,14 +81,14 @@ func spawnControllerManagerProcess(tl common.TestLogger, kubeConfigPath, namespa
 	// Get the directory of the current executable
 	_, filename, _, _ := runtime.Caller(0)
 	managedPath := filepath.Dir(filename)
-	confFile, err := filepath.Abs(fmt.Sprintf("%s/../../config/federationconfig.yaml", managedPath))
+	confFile, err := filepath.Abs(fmt.Sprintf("%s/../../config/kubefedconfig.yaml", managedPath))
 	if err != nil {
 		tl.Fatalf("Error discovering the configuration file for FecerationConfig resources: %v", err)
 	}
 
 	args := []string{fmt.Sprintf("--kubeconfig=%s", kubeConfigPath),
-		fmt.Sprintf("--federation-namespace=%s", namespace),
-		fmt.Sprintf("--federation-config=%s", confFile),
+		fmt.Sprintf("--kubefed-namespace=%s", namespace),
+		fmt.Sprintf("--kubefed-config=%s", confFile),
 	}
 	cmd := exec.Command("controller-manager", args...)
 

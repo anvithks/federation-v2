@@ -22,20 +22,21 @@ import (
 	"sort"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	fedschedulingv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/scheduling/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	ctlutil "github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util/planner"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util/podanalyzer"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/labels"
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/klog"
+
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	fedschedulingv1a1 "sigs.k8s.io/kubefed/pkg/apis/scheduling/v1alpha1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	ctlutil "sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/pkg/controller/util/planner"
+	"sigs.k8s.io/kubefed/pkg/controller/util/podanalyzer"
 )
 
 const (
@@ -135,7 +136,7 @@ func (s *ReplicaScheduler) HasSynced() bool {
 	}
 
 	if !s.podInformer.ClustersSynced() {
-		glog.V(2).Infof("Cluster list not synced")
+		klog.V(2).Infof("Cluster list not synced")
 		return false
 	}
 	clusters, err := s.podInformer.GetReadyClusters()
@@ -196,7 +197,7 @@ func (s *ReplicaScheduler) Reconcile(obj pkgruntime.Object, qualifiedName ctluti
 
 	err = plugin.(*Plugin).Reconcile(qualifiedName, result)
 	if err != nil {
-		runtime.HandleError(errors.Wrapf(err, "Failed to reconcile Federation Targets for RSP named %q", key))
+		runtime.HandleError(errors.Wrapf(err, "Failed to reconcile federated targets for RSP named %q", key))
 		return ctlutil.StatusError
 	}
 
@@ -241,9 +242,7 @@ func (s *ReplicaScheduler) GetSchedulingResult(rsp *fedschedulingv1a1.ReplicaSch
 		}
 
 		label := labels.SelectorFromSet(labels.Set(selectorLabels))
-		if err != nil {
-			return nil, errors.Wrap(err, "invalid selector")
-		}
+
 		unstructuredPodList, err := client.Resources(unstructuredObj.GetNamespace()).List(metav1.ListOptions{LabelSelector: label.String()})
 		if err != nil || unstructuredPodList == nil {
 			return nil, err
@@ -264,12 +263,14 @@ func (s *ReplicaScheduler) GetSchedulingResult(rsp *fedschedulingv1a1.ReplicaSch
 	}
 
 	plnr := planner.NewPlanner(rsp)
-	return schedule(plnr, key, clusterNames, currentReplicasPerCluster, estimatedCapacity), nil
+	return schedule(plnr, key, clusterNames, currentReplicasPerCluster, estimatedCapacity)
 }
 
-func schedule(planner *planner.Planner, key string, clusterNames []string, currentReplicasPerCluster map[string]int64, estimatedCapacity map[string]int64) map[string]int64 {
-
-	scheduleResult, overflow := planner.Plan(clusterNames, currentReplicasPerCluster, estimatedCapacity, key)
+func schedule(planner *planner.Planner, key string, clusterNames []string, currentReplicasPerCluster map[string]int64, estimatedCapacity map[string]int64) (map[string]int64, error) {
+	scheduleResult, overflow, err := planner.Plan(clusterNames, currentReplicasPerCluster, estimatedCapacity, key)
+	if err != nil {
+		return nil, err
+	}
 
 	// TODO: Check if we really need to place the federated type in clusters
 	// with 0 replicas. Override replicas would be set to 0 in this case.
@@ -285,7 +286,7 @@ func schedule(planner *planner.Planner, key string, clusterNames []string, curre
 		result[clusterName] += replicas
 	}
 
-	if glog.V(4) {
+	if klog.V(4) {
 		buf := bytes.NewBufferString(fmt.Sprintf("Schedule - %q\n", key))
 		sort.Strings(clusterNames)
 		for _, clusterName := range clusterNames {
@@ -300,9 +301,9 @@ func schedule(planner *planner.Planner, key string, clusterNames []string, curre
 			}
 			fmt.Fprintf(buf, "\n")
 		}
-		glog.V(4).Infof(buf.String())
+		klog.V(4).Infof(buf.String())
 	}
-	return result
+	return result, nil
 }
 
 // clustersReplicaState returns information about the scheduling state of the pods running in the federated clusters.

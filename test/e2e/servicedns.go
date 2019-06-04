@@ -19,25 +19,28 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"github.com/pkg/errors"
 	"sort"
 	"strings"
 
 	apiv1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	dnsv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/multiclusterdns/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/dnsendpoint"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	dnsv1a1 "sigs.k8s.io/kubefed/pkg/apis/multiclusterdns/v1alpha1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/dnsendpoint"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
 var _ = Describe("ServiceDNS", func() {
-	f := framework.NewFederationFramework("multicluster-service-dns")
+	f := framework.NewKubeFedFramework("multicluster-service-dns")
 	tl := framework.NewE2ELogger()
 
 	const userAgent = "test-service-dns"
@@ -46,7 +49,7 @@ var _ = Describe("ServiceDNS", func() {
 	const Domain = "example.com"
 
 	var client genericclient.Client
-	var clusterRegionZones map[string]fedv1a1.FederatedClusterStatus
+	var clusterRegionZones map[string]fedv1b1.KubeFedClusterStatus
 	var federation string
 	var namespace string
 
@@ -60,25 +63,22 @@ var _ = Describe("ServiceDNS", func() {
 		client = f.Client(userAgent)
 		namespace = f.TestNamespaceName()
 
-		federatedClusters := &fedv1a1.FederatedClusterList{}
-		err := client.List(context.TODO(), federatedClusters, f.FederationSystemNamespace())
-		framework.ExpectNoError(err, "Error listing federated clusters")
-		clusterRegionZones = ensureClustersHaveRegionZoneAttributes(client, federatedClusters)
+		clusterRegionZones = ensureClustersHaveRegionZoneAttributes(tl, client, f.KubeFedSystemNamespace())
 		if framework.TestContext.RunControllers() {
 			fixture := framework.NewServiceDNSControllerFixture(tl, f.ControllerConfig())
 			f.RegisterFixture(fixture)
 		}
 		f.EnsureTestNamespacePropagation()
 		domainObj := common.NewDomainObject(federationPrefix, Domain)
-		domainObj.Namespace = f.FederationSystemNamespace()
-		err = client.Create(context.TODO(), domainObj)
+		domainObj.Namespace = f.KubeFedSystemNamespace()
+		err := client.Create(context.TODO(), domainObj)
 		framework.ExpectNoError(err, "Error creating Domain object")
 		federation = domainObj.Name
 	})
 
 	AfterEach(func() {
 		domainObj := &dnsv1a1.Domain{}
-		err := client.Delete(context.TODO(), domainObj, f.FederationSystemNamespace(), federation)
+		err := client.Delete(context.TODO(), domainObj, f.KubeFedSystemNamespace(), federation)
 		framework.ExpectNoError(err, "Error deleting Domain object")
 	})
 
@@ -169,8 +169,8 @@ var _ = Describe("ServiceDNS", func() {
 	})
 })
 
-func createClusterServiceAndEndpoints(f framework.FederationFramework, name, namespace string, domain string,
-	clusterRegionZones map[string]fedv1a1.FederatedClusterStatus) *dnsv1a1.ServiceDNSRecordStatus {
+func createClusterServiceAndEndpoints(f framework.KubeFedFramework, name, namespace string, domain string,
+	clusterRegionZones map[string]fedv1b1.KubeFedClusterStatus) *dnsv1a1.ServiceDNSRecordStatus {
 
 	const userAgent = "test-service-dns"
 
@@ -197,7 +197,9 @@ func createClusterServiceAndEndpoints(f framework.FederationFramework, name, nam
 		createdService, err := client.CoreV1().Services(namespace).Create(service)
 		framework.ExpectNoError(err, "Error creating service in cluster %q", clusterName)
 
-		createdService.Status = apiv1.ServiceStatus{loadbalancerStatus}
+		createdService.Status = apiv1.ServiceStatus{
+			LoadBalancer: loadbalancerStatus,
+		}
 
 		// Fake out provisioning LoadBalancer by updating the service status in member cluster.
 		_, err = client.CoreV1().Services(namespace).UpdateStatus(createdService)
@@ -215,16 +217,35 @@ func createClusterServiceAndEndpoints(f framework.FederationFramework, name, nam
 	return serviceDNSStatus
 }
 
-func ensureClustersHaveRegionZoneAttributes(client genericclient.Client, federatedClusters *fedv1a1.FederatedClusterList) map[string]fedv1a1.FederatedClusterStatus {
-	clusterRegionZones := make(map[string]fedv1a1.FederatedClusterStatus)
-	for i, cluster := range federatedClusters.Items {
-		cluster.Status.Region = fmt.Sprintf("r%d", i)
-		cluster.Status.Zones = []string{fmt.Sprintf("z%d", i)}
+func ensureClustersHaveRegionZoneAttributes(tl common.TestLogger, client genericclient.Client, clusterNamespace string) map[string]fedv1b1.KubeFedClusterStatus {
+	clusters := &fedv1b1.KubeFedClusterList{}
+	err := client.List(context.TODO(), clusters, clusterNamespace)
+	framework.ExpectNoError(err, "Error listing federated clusters")
 
-		err := client.UpdateStatus(context.TODO(), &cluster)
+	clusterRegionZones := make(map[string]fedv1b1.KubeFedClusterStatus)
+	for i, cluster := range clusters.Items {
+		err := wait.PollImmediate(framework.PollInterval, framework.TestContext.SingleCallTimeout, func() (bool, error) {
+			cluster.Status.Region = fmt.Sprintf("r%d", i)
+			cluster.Status.Zones = []string{fmt.Sprintf("z%d", i)}
+
+			err := client.UpdateStatus(context.TODO(), &cluster)
+			if apierrors.IsConflict(err) {
+				clusterName := cluster.Name
+				tl.Logf("Failed to update status for federated cluster %q: %v", clusterName, err)
+				err = client.Get(context.TODO(), &cluster, clusterNamespace, clusterName)
+				if err != nil {
+					return false, errors.Wrapf(err, "failed to retrieve cluster object")
+				}
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			return true, nil
+		})
 		framework.ExpectNoError(err, "Error updating federated cluster status")
 
-		clusterRegionZones[cluster.Name] = fedv1a1.FederatedClusterStatus{
+		clusterRegionZones[cluster.Name] = fedv1b1.KubeFedClusterStatus{
 			Region: cluster.Status.Region,
 			Zones:  cluster.Status.Zones,
 		}

@@ -26,23 +26,23 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	fedschedulingv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/scheduling/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/schedulingmanager"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/pkg/kubefed2"
-	kfenable "github.com/kubernetes-sigs/federation-v2/pkg/kubefed2/enable"
-	"github.com/kubernetes-sigs/federation-v2/pkg/schedulingtypes"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
 	restclient "k8s.io/client-go/rest"
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	fedschedulingv1a1 "sigs.k8s.io/kubefed/pkg/apis/scheduling/v1alpha1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/schedulingmanager"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/pkg/kubefedctl"
+	kfenable "sigs.k8s.io/kubefed/pkg/kubefedctl/enable"
+	"sigs.k8s.io/kubefed/pkg/schedulingtypes"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
 var _ = Describe("Scheduling", func() {
-	f := framework.NewFederationFramework("scheduling")
+	f := framework.NewKubeFedFramework("scheduling")
 	tl := framework.NewE2ELogger()
 
 	userAgent := "rsp-test"
@@ -75,7 +75,7 @@ var _ = Describe("Scheduling", func() {
 				tl.Fatalf("Error initializing dynamic client: %v", err)
 			}
 			for targetTypeName := range schedulingTypes {
-				typeConfig, err := common.GetTypeConfig(client, targetTypeName, f.FederationSystemNamespace())
+				typeConfig, err := common.GetTypeConfig(client, targetTypeName, f.KubeFedSystemNamespace())
 				if err != nil {
 					tl.Fatalf("Error retrieving federatedtypeconfig for %q: %v", targetTypeName, err)
 				}
@@ -100,13 +100,19 @@ var _ = Describe("Scheduling", func() {
 					framework.Skipf("The scheduling manager can only be tested when controllers are running in-process.")
 				}
 
+				// The deletion of FederatedTypeConfigs performed by this test
+				// requires the FederatedTypeConfig controller in order to
+				// remove its finalizer for proper deletion.
+				controllerFixture = framework.NewFederatedTypeConfigControllerFixture(tl, f.ControllerConfig())
+				f.RegisterFixture(controllerFixture)
+
 				// make sure scheduler/plugin initialization are done before our test
 				By("Waiting for scheduler/plugin controllers are initialized in scheduling manager")
 				waitForSchedulerStarted(tl, controller, schedulingTypes)
 
 				By("Deleting federatedtypeconfig resources for scheduler/plugin controllers")
 				for targetTypeName := range schedulingTypes {
-					deleteTypeConfigResource(targetTypeName, f.FederationSystemNamespace(), kubeConfig, tl)
+					deleteTypeConfigResource(targetTypeName, f.KubeFedSystemNamespace(), kubeConfig, tl)
 				}
 
 				By("Waiting for scheduler/plugin controllers are destroyed in scheduling manager")
@@ -114,7 +120,7 @@ var _ = Describe("Scheduling", func() {
 
 				By("Enabling federatedtypeconfig resources again for scheduler/plugin controllers")
 				for targetTypeName := range schedulingTypes {
-					enableTypeConfigResource(targetTypeName, f.FederationSystemNamespace(), kubeConfig, tl)
+					enableTypeConfigResource(targetTypeName, f.KubeFedSystemNamespace(), kubeConfig, tl)
 				}
 
 				By("Waiting for the scheduler/plugin controllers are started in scheduling manager")
@@ -192,7 +198,7 @@ var _ = Describe("Scheduling", func() {
 
 						name, err := createTestObjs(tl, genericClient, typeConfig, kubeConfig, rspSpec, namespace)
 						if err != nil {
-							tl.Fatalf("Creation of test objects failed in federation: %v", err)
+							tl.Fatalf("Creation of test objects in the host cluster failed: %v", err)
 						}
 
 						err = waitForMatchingFederatedObject(tl, typeConfig, kubeConfig, name, namespace, expected)
@@ -202,7 +208,7 @@ var _ = Describe("Scheduling", func() {
 
 						err = deleteTestObj(typeConfig, kubeConfig, name, namespace)
 						if err != nil {
-							tl.Fatalf("Deletion of test object failed in fedeartion: %v", err)
+							tl.Fatalf("Deletion of a test object from the host cluster failed: %v", err)
 						}
 					})
 				}
@@ -389,7 +395,7 @@ func enableTypeConfigResource(name, namespace string, config *restclient.Config,
 
 func deleteTypeConfigResource(name, namespace string, config *restclient.Config, tl common.TestLogger) {
 	qualifiedName := util.QualifiedName{Namespace: namespace, Name: name}
-	err := kubefed2.DisableFederation(nil, config, qualifiedName, true, false)
+	err := kubefedctl.DisableFederation(nil, config, nil, qualifiedName, true, false, false)
 	if err != nil {
 		tl.Fatalf("Error disabling federation of target type %q: %v", qualifiedName, err)
 	}

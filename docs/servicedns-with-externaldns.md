@@ -22,9 +22,9 @@ DNS resource records of Kubernetes Service object for supported DNS providers.
 
 The above diagram illustrates MCSDNS. A typical MCSDNS workflow consists of:
 
-1. Creating `FederatedDeployment` and `FederatedService` objects. The Federation sync
+1. Creating `FederatedDeployment` and `FederatedService` objects. The KubeFed sync
    controller propagates the corresponding objects to target clusters.
-2. Creating a `Domain` object that associates a DNS zone and authoritative name server for the federation.
+2. Creating a `Domain` object that associates a DNS zone and authoritative name server for the KubeFed control plane.
 3. Creating a `ServiceDNSRecord` object that identifies the intended domain name and other optional resource
    record details of a `Service` object that exists in one or more target clusters.
 4. A `DNSEndpoint` object created by the DNS Endpoint Controller that corresponds to the `ServiceDNSRecord`. The
@@ -48,20 +48,20 @@ MCSDNS is comprised of multiple types and controllers:
 
 Setting-up MCSDNS can be accomplished by referencing the following documentation:
 
-- The Federation-v2 [User Guide](userguide.md) to setup one or more Kubernetes clusters and the Federation
-  control-plane. Due to [Issue #370](https://github.com/kubernetes-sigs/federation-v2/issues/370), the environment running
+- The KubeFed [User Guide](userguide.md) to setup one or more Kubernetes clusters and the KubeFed
+  control-plane. Due to [Issue #370](https://github.com/kubernetes-sigs/kubefed/issues/370), the environment running
   the clusters must support service `type: LoadBalancer`. For the GKE deployment option, the cluster hosting the ExternalDNS controller must have scope
   `https://www.googleapis.com/auth/ndev.clouddns.readwrite`.
 - If needed, create a domain name with one of the supported providers or delegate a DNS subdomain for use with
   ExternalDNS. Reference your DNS provider documentation on how to create a domain or delegate a subdomain.
 - The [ExternalDNS](https://github.com/kubernetes-incubator/external-dns) user guides to run the external-dns
   controller. You must ensure the following `args` are provided in the external-dns Deployment manifest:
-  `--source=crd --crd-source-apiversion=multiclusterdns.federation.k8s.io/v1alpha1 --crd-source-kind=DNSEndpoint --registry=txt --txt-prefix=cname`
+  `--source=crd --crd-source-apiversion=multiclusterdns.kubefed.k8s.io/v1alpha1 --crd-source-kind=DNSEndpoint --registry=txt --txt-prefix=cname`
   **Note**: If you do not deploy the external-dns controller to the same namespace and use the default service account
-  of the federation control-plane, you must setup RBAC permissions allowing the controller access to necessary
+  of the KubeFed control-plane, you must setup RBAC permissions allowing the controller access to necessary
   resources.
 
-After the cluster, federation control-plane, and external-dns controller are running, use the
+After the cluster, KubeFed control-plane, and external-dns controller are running, use the
 [sample](../example/sample1) federated deployment and service to test MCSDNS. You must change the sample service type to
 `LoadBalancer` for the Service DNS controller to populate the status IP of the `ServiceDNSRecord` and the target IP's of
 the `DNSEndpoint`:
@@ -88,17 +88,17 @@ It may take a few minutes for the `EXTERNAL-IP` field of each `Service` to be po
 
 ```bash
 $ cat <<EOF | kubectl create -f -
-apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
 kind: Domain
 metadata:
   # Corresponds to <federation> in the resource records.
   name: test-domain
-  # The namespace running federation-controller-manager.
-  namespace: federation-system
+  # The namespace running kubefed-controller-manager.
+  namespace: kube-federation-system
 # The domain/subdomain that is setup in your external-dns provider.
 domain: your.domain.name
 ---
-apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
 kind: ServiceDNSRecord
 metadata:
   # The name of the sample service.
@@ -117,7 +117,7 @@ The DNS Endpoint controller will use the external IP address from each `Service`
 
 ```bash
 $ kubectl -n test-namespace get dnsendpoint -o yaml
-apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
 kind: DNSEndpoint
 metadata:
   creationTimestamp: 2018-10-12T21:41:12Z
@@ -125,7 +125,7 @@ metadata:
   name: service-test-service
   namespace: test-namespace
   resourceVersion: "755496"
-  selfLink: /apis/multiclusterdns.federation.k8s.io/v1alpha1/namespaces/test-namespace/dnsendpoints/service-test-service
+  selfLink: /apis/multiclusterdns.kubefed.k8s.io/v1alpha1/namespaces/test-namespace/dnsendpoints/service-test-service
   uid: 89c18705-ce67-11e8-bebb-42010a8a00b8
 spec:
   endpoints:

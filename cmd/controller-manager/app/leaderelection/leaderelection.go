@@ -20,8 +20,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/golang/glog"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	kubeclient "k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -30,30 +29,31 @@ import (
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/klog"
 
-	"github.com/kubernetes-sigs/federation-v2/cmd/controller-manager/app/options"
+	"sigs.k8s.io/kubefed/cmd/controller-manager/app/options"
 )
 
-func NewFederationLeaderElector(opts *options.Options, fnStartControllers func(*options.Options, <-chan struct{})) (*leaderelection.LeaderElector, error) {
-	const component = "federation-controller-manager"
-	restclient.AddUserAgent(opts.Config.KubeConfig, "federation-leader-election")
+func NewKubeFedLeaderElector(opts *options.Options, fnStartControllers func(*options.Options, <-chan struct{})) (*leaderelection.LeaderElector, error) {
+	const component = "kubefed-controller-manager"
+	restclient.AddUserAgent(opts.Config.KubeConfig, "kubefed-leader-election")
 	leaderElectionClient := kubeclient.NewForConfigOrDie(opts.Config.KubeConfig)
 
 	hostname, err := os.Hostname()
 	if err != nil {
-		glog.Infof("unable to get hostname: %v", err)
+		klog.Infof("unable to get hostname: %v", err)
 		return nil, err
 	}
 
 	// Prepare event clients.
 	broadcaster := record.NewBroadcaster()
-	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: leaderElectionClient.CoreV1().Events(opts.Config.FederationNamespace)})
+	broadcaster.StartRecordingToSink(&corev1.EventSinkImpl{Interface: leaderElectionClient.CoreV1().Events(opts.Config.KubeFedNamespace)})
 	eventRecorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: component})
 
 	// add a uniquifier so that two processes on the same host don't accidentally both become active
 	id := hostname + "_" + string(uuid.NewUUID())
-	rl, err := resourcelock.New(opts.LeaderElection.ResourceLock,
-		opts.Config.FederationNamespace,
+	rl, err := resourcelock.New(string(opts.LeaderElection.ResourceLock),
+		opts.Config.KubeFedNamespace,
 		component,
 		leaderElectionClient.CoreV1(),
 		resourcelock.ResourceLockConfig{
@@ -61,7 +61,7 @@ func NewFederationLeaderElector(opts *options.Options, fnStartControllers func(*
 			EventRecorder: eventRecorder,
 		})
 	if err != nil {
-		glog.Infof("couldn't create resource lock: %v", err)
+		klog.Infof("couldn't create resource lock: %v", err)
 		return nil, err
 	}
 
@@ -72,13 +72,13 @@ func NewFederationLeaderElector(opts *options.Options, fnStartControllers func(*
 		RetryPeriod:   opts.LeaderElection.RetryPeriod,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
-				glog.Info("promoted as leader")
+				klog.Info("promoted as leader")
 				stopChan := ctx.Done()
 				fnStartControllers(opts, stopChan)
 				<-stopChan
 			},
 			OnStoppedLeading: func() {
-				glog.Info("leader election lost")
+				klog.Info("leader election lost")
 			},
 		},
 	})

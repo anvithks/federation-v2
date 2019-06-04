@@ -21,6 +21,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	restclient "k8s.io/client-go/rest"
+
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
 )
 
 // LeaderElectionConfiguration defines the configuration of leader election
@@ -44,35 +46,35 @@ type LeaderElectionConfiguration struct {
 	RetryPeriod time.Duration
 	// resourceLock indicates the resource object type that will be used to lock
 	// during leader election cycles.
-	ResourceLock string
+	ResourceLock fedv1b1.ResourceLockType
 }
 
-// FederationNamespaces defines the namespace configuration shared by
-// most federation controllers.
-type FederationNamespaces struct {
-	FederationNamespace string
-	ClusterNamespace    string
-	TargetNamespace     string
+// KubeFedNamespaces defines the namespace configuration shared by
+// most kubefed controllers.
+type KubeFedNamespaces struct {
+	KubeFedNamespace string
+	TargetNamespace  string
 }
 
 // ClusterHealthCheckConfig defines the configurable parameters for cluster health check
 type ClusterHealthCheckConfig struct {
-	PeriodSeconds    int
-	FailureThreshold int
-	SuccessThreshold int
-	TimeoutSeconds   int
+	PeriodSeconds    int64
+	FailureThreshold int64
+	SuccessThreshold int64
+	TimeoutSeconds   int64
 }
 
-// ControllerConfig defines the configuration common to federation
+// ControllerConfig defines the configuration common to KubeFed
 // controllers.
 type ControllerConfig struct {
-	FederationNamespaces
+	KubeFedNamespaces
 	KubeConfig              *restclient.Config
 	ClusterAvailableDelay   time.Duration
 	ClusterUnavailableDelay time.Duration
 	MinimizeLatency         bool
+	SkipAdoptingResources   bool
 }
 
 func (c *ControllerConfig) LimitedScope() bool {
-	return c.FederationNamespaces.TargetNamespace != metav1.NamespaceAll
+	return c.KubeFedNamespaces.TargetNamespace != metav1.NamespaceAll
 }

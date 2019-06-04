@@ -17,19 +17,17 @@ limitations under the License.
 package sync
 
 import (
-	"github.com/golang/glog"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/klog"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/sync/version"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util/deletionhelper"
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/sync/version"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
 // FederatedResourceAccessor provides a way to retrieve and visit
@@ -37,7 +35,7 @@ import (
 type FederatedResourceAccessor interface {
 	Run(stopChan <-chan struct{})
 	HasSynced() bool
-	FederatedResource(qualifiedName util.QualifiedName) (FederatedResource, error)
+	FederatedResource(qualifiedName util.QualifiedName) (federatedResource FederatedResource, possibleOrphan bool, err error)
 	VisitFederatedResources(visitFunc func(obj interface{}))
 }
 
@@ -46,9 +44,6 @@ type resourceAccessor struct {
 	typeConfig        typeconfig.Interface
 	targetIsNamespace bool
 	fedNamespace      string
-
-	// The informer for target types in the member clusters
-	federatedInformer util.FederatedInformer
 
 	// The informer for the federated type.
 	federatedStore      cache.Store
@@ -71,9 +66,6 @@ type resourceAccessor struct {
 	// Manages propagated versions
 	versionManager *version.VersionManager
 
-	// Adds finalizers to resources and performs cleanup of target resources.
-	deletionHelper *deletionhelper.DeletionHelper
-
 	// Records events on the federated resource
 	eventRecorder record.EventRecorder
 }
@@ -84,18 +76,15 @@ func NewFederatedResourceAccessor(
 	fedNamespaceAPIResource *metav1.APIResource,
 	client genericclient.Client,
 	enqueueObj func(pkgruntime.Object),
-	informer util.FederatedInformer,
-	updater util.FederatedUpdater,
 	eventRecorder record.EventRecorder) (FederatedResourceAccessor, error) {
 
 	a := &resourceAccessor{
 		limitedScope:            controllerConfig.LimitedScope(),
 		typeConfig:              typeConfig,
-		targetIsNamespace:       typeConfig.GetTarget().Kind == util.NamespaceKind,
-		fedNamespace:            controllerConfig.FederationNamespace,
+		targetIsNamespace:       typeConfig.GetTargetType().Kind == util.NamespaceKind,
+		fedNamespace:            controllerConfig.KubeFedNamespace,
 		fedNamespaceAPIResource: fedNamespaceAPIResource,
 		eventRecorder:           eventRecorder,
-		federatedInformer:       informer,
 	}
 
 	targetNamespace := controllerConfig.TargetNamespace
@@ -111,7 +100,7 @@ func NewFederatedResourceAccessor(
 		// Initialize an informer for namespaces.  The namespace
 		// containing a federated namespace resource is used as the
 		// template for target resources in member clusters.
-		namespaceAPIResource := typeConfig.GetTarget()
+		namespaceAPIResource := typeConfig.GetTargetType()
 		namespaceTypeClient, err := util.NewResourceClient(controllerConfig.KubeConfig, &namespaceAPIResource)
 		if err != nil {
 			return nil, err
@@ -150,20 +139,8 @@ func NewFederatedResourceAccessor(
 		client,
 		typeConfig.GetFederatedNamespaced(),
 		typeConfig.GetFederatedType().Kind,
-		typeConfig.GetTarget().Kind,
+		typeConfig.GetTargetType().Kind,
 		targetNamespace,
-	)
-
-	a.deletionHelper = deletionhelper.NewDeletionHelper(
-		func(rawObj pkgruntime.Object) (pkgruntime.Object, error) {
-			obj := rawObj.(*unstructured.Unstructured)
-			return federatedTypeClient.Resources(obj.GetNamespace()).Update(obj, metav1.UpdateOptions{})
-		},
-		func(obj pkgruntime.Object) string {
-			return util.NewQualifiedName(obj).String()
-		},
-		informer,
-		updater,
 	)
 
 	return a, nil
@@ -183,34 +160,37 @@ func (a *resourceAccessor) Run(stopChan <-chan struct{}) {
 func (a *resourceAccessor) HasSynced() bool {
 	kind := a.typeConfig.GetFederatedType().Kind
 	if !a.versionManager.HasSynced() {
-		glog.V(2).Infof("Version manager for %s not synced", kind)
+		klog.V(2).Infof("Version manager for %s not synced", kind)
 		return false
 	}
 	if !a.federatedController.HasSynced() {
-		glog.V(2).Infof("Informer for %s not synced", kind)
+		klog.V(2).Infof("Informer for %s not synced", kind)
 		return false
 	}
 	if a.namespaceController != nil && !a.namespaceController.HasSynced() {
-		glog.V(2).Infof("Namespace informer for %s not synced", kind)
+		klog.V(2).Infof("Namespace informer for %s not synced", kind)
 		return false
 	}
 	if a.fedNamespaceController != nil && !a.fedNamespaceController.HasSynced() {
-		glog.V(2).Infof("FederatedNamespace informer for %s not synced", kind)
+		klog.V(2).Infof("FederatedNamespace informer for %s not synced", kind)
 		return false
 	}
 	return true
 }
 
-func (a *resourceAccessor) FederatedResource(eventSource util.QualifiedName) (FederatedResource, error) {
+func (a *resourceAccessor) FederatedResource(eventSource util.QualifiedName) (FederatedResource, bool, error) {
 	if a.targetIsNamespace && a.isSystemNamespace(eventSource.Name) {
-		glog.V(7).Infof("Ignoring system namespace %q", eventSource.Name)
-		return nil, nil
+		klog.V(7).Infof("Ignoring system namespace %q", eventSource.Name)
+		return nil, false, nil
 	}
 
 	kind := a.typeConfig.GetFederatedType().Kind
 
 	// Most federated resources have the same name as their targets.
-	targetName := eventSource
+	targetName := util.QualifiedName{
+		Namespace: eventSource.Namespace,
+		Name:      eventSource.Name,
+	}
 	federatedName := util.QualifiedName{
 		Namespace: eventSource.Namespace,
 		Name:      eventSource.Name,
@@ -232,7 +212,7 @@ func (a *resourceAccessor) FederatedResource(eventSource util.QualifiedName) (Fe
 			if federatedName.Namespace != federatedName.Name {
 				// A FederatedNamespace is only valid for propagation
 				// if it has the same name as the containing namespace.
-				return nil, nil
+				return nil, false, nil
 			}
 			// Ensure the target name is not namespace qualified.
 			targetName.Namespace = ""
@@ -243,26 +223,30 @@ func (a *resourceAccessor) FederatedResource(eventSource util.QualifiedName) (Fe
 
 	resource, err := util.ObjFromCache(a.federatedStore, kind, key)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if resource == nil {
-		// The event source may be a federated resource that was
-		// deleted, but is more likely a non-federated resource in the
-		// target cluster.
-		glog.V(7).Infof("%s %q was not found which indicates that the %s is not federated",
-			kind, key, a.typeConfig.GetTarget().Kind)
-		return nil, nil
+		// If the target is a namespace and the event source has a
+		// namespace, the event source is guaranteed to be a
+		// FederatedNamespace.
+		sourceIsFederatedNamespace := a.targetIsNamespace && eventSource.Namespace != ""
+
+		// The lack of a federated resource indicates that the event
+		// source may be an orphaned resource that still has the
+		// managed label.
+		possibleOrphan := !sourceIsFederatedNamespace
+		return nil, possibleOrphan, nil
 	}
 
 	var namespace *unstructured.Unstructured
 	if a.targetIsNamespace {
-		namespace, err = util.ObjFromCache(a.namespaceStore, a.typeConfig.GetTarget().Kind, targetName.String())
+		namespace, err = util.ObjFromCache(a.namespaceStore, a.typeConfig.GetTargetType().Kind, targetName.String())
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		if namespace == nil {
 			// The namespace containing the FederatedNamespace was deleted.
-			return nil, nil
+			return nil, false, nil
 		}
 	}
 
@@ -271,7 +255,7 @@ func (a *resourceAccessor) FederatedResource(eventSource util.QualifiedName) (Fe
 		fedNamespaceName := util.QualifiedName{Namespace: targetName.Namespace, Name: targetName.Namespace}
 		fedNamespace, err = util.ObjFromCache(a.fedNamespaceStore, a.fedNamespaceAPIResource.Kind, fedNamespaceName.String())
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		// If fedNamespace is nil, the resources in member clusters
 		// will be removed.
@@ -286,12 +270,10 @@ func (a *resourceAccessor) FederatedResource(eventSource util.QualifiedName) (Fe
 		federatedName:     federatedName,
 		federatedResource: resource,
 		versionManager:    a.versionManager,
-		deletionHelper:    a.deletionHelper,
 		namespace:         namespace,
 		fedNamespace:      fedNamespace,
 		eventRecorder:     a.eventRecorder,
-		informer:          a.federatedInformer,
-	}, nil
+	}, false, nil
 }
 
 func (a *resourceAccessor) VisitFederatedResources(visitFunc func(obj interface{})) {

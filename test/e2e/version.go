@@ -35,15 +35,15 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeclientset "k8s.io/client-go/kubernetes"
 
-	apicommon "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/common"
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/sync"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/sync/version"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	kfenable "github.com/kubernetes-sigs/federation-v2/pkg/kubefed2/enable"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
+	apicommon "sigs.k8s.io/kubefed/pkg/apis/core/common"
+	fedv1a1 "sigs.k8s.io/kubefed/pkg/apis/core/v1alpha1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/sync"
+	"sigs.k8s.io/kubefed/pkg/controller/sync/version"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	kfenable "sigs.k8s.io/kubefed/pkg/kubefedctl/enable"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
@@ -165,7 +165,7 @@ func newTestVersionAdapter(client genericclient.Client, kubeClient kubeclientset
 var _ = Describe("VersionManager", func() {
 	userAgent := "test-version-manager"
 
-	f := framework.NewFederationFramework(userAgent)
+	f := framework.NewKubeFedFramework(userAgent)
 
 	tl := framework.NewE2ELogger()
 
@@ -501,7 +501,7 @@ func inSupportedScopeIt(description string, namespaced bool, f interface{}) {
 	// function performs doesn't provide a good indication of which
 	// tests are skipped and why.
 	if !namespaced && framework.TestContext.LimitedScope {
-		// Validation of cluster-scoped versioning is not supported for namespaced federation
+		// Validation of cluster-scoped versioning is not supported for a namespaced control plane
 		PIt(description, f)
 	} else {
 		It(description, f)

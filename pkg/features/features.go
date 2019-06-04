@@ -18,6 +18,7 @@ package features
 
 import (
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	"k8s.io/klog"
 )
 
 const (
@@ -30,7 +31,7 @@ const (
 	// owner: @marun
 	// alpha: v0.1
 	//
-	// PushReconciler is a propogation model where in objects are pushed to member clusters from federation.
+	// PushReconciler ensures that managed resources in member clusters represent the state declared in federated resources.
 	PushReconciler utilfeature.Feature = "PushReconciler"
 
 	// owner: @irfanurrehman
@@ -39,7 +40,7 @@ const (
 	// Scheduler controllers which dynamically schedules workloads based on user preferences.
 	SchedulerPreferences utilfeature.Feature = "SchedulerPreferences"
 
-	// owner: @kubernetes-sigs/federation-v2-maintainers
+	// owner: @kubernetes-sigs/kubefed-maintainers
 	// alpha: v0.1
 	//
 	// DNS based cross cluster service discovery.
@@ -54,13 +55,15 @@ const (
 )
 
 func init() {
-	utilfeature.DefaultFeatureGate.Add(defaultFederationFeatureGates)
+	if err := utilfeature.DefaultFeatureGate.Add(defaultKubeFedFeatureGates); err != nil {
+		klog.Fatalf("Unexpected error: %v", err)
+	}
 }
 
-// defaultFederationFeatureGates consists of all known Federation-specific feature keys.
-// To add a new feature, define a key for it above and add it here. The features will be
-// available throughout Federation binaries.
-var defaultFederationFeatureGates = map[utilfeature.Feature]utilfeature.FeatureSpec{
+// defaultKubeFedFeatureGates consists of all known KubeFed-specific
+// feature keys.  To add a new feature, define a key for it above and
+// add it here.
+var defaultKubeFedFeatureGates = map[utilfeature.Feature]utilfeature.FeatureSpec{
 	SchedulerPreferences:         {Default: true, PreRelease: utilfeature.Alpha},
 	PushReconciler:               {Default: true, PreRelease: utilfeature.Alpha},
 	CrossClusterServiceDiscovery: {Default: true, PreRelease: utilfeature.Alpha},

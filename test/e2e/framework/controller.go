@@ -19,19 +19,20 @@ package framework
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/dnsendpoint"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/federatedcluster"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/ingressdns"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/schedulingmanager"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/servicedns"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/status"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/sync"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	"sigs.k8s.io/kubefed/pkg/controller/dnsendpoint"
+	"sigs.k8s.io/kubefed/pkg/controller/federatedtypeconfig"
+	"sigs.k8s.io/kubefed/pkg/controller/ingressdns"
+	"sigs.k8s.io/kubefed/pkg/controller/kubefedcluster"
+	"sigs.k8s.io/kubefed/pkg/controller/schedulingmanager"
+	"sigs.k8s.io/kubefed/pkg/controller/servicedns"
+	"sigs.k8s.io/kubefed/pkg/controller/status"
+	"sigs.k8s.io/kubefed/pkg/controller/sync"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/test/common"
 )
 
-// ControllerFixture manages a federation controller for testing.
+// ControllerFixture manages a KubeFed controller for testing.
 type ControllerFixture struct {
 	stopChan chan struct{}
 }
@@ -41,15 +42,29 @@ func NewSyncControllerFixture(tl common.TestLogger, controllerConfig *util.Contr
 	f := &ControllerFixture{
 		stopChan: make(chan struct{}),
 	}
-	err := sync.StartFederationSyncController(controllerConfig, f.stopChan, typeConfig, namespacePlacement)
+	err := sync.StartKubeFedSyncController(controllerConfig, f.stopChan, typeConfig, namespacePlacement)
 	if err != nil {
 		tl.Fatalf("Error starting sync controller: %v", err)
 	}
-	if typeConfig.GetEnableStatus() {
-		err := status.StartFederationStatusController(controllerConfig, f.stopChan, typeConfig)
+	if typeConfig.GetStatusEnabled() {
+		err := status.StartKubeFedStatusController(controllerConfig, f.stopChan, typeConfig)
 		if err != nil {
 			tl.Fatalf("Error starting status controller: %v", err)
 		}
+	}
+	return f
+}
+
+// NewFederatedTypeConfigControllerFixure initializes a new federatedtypeconfig
+// controller fixure.
+func NewFederatedTypeConfigControllerFixture(tl common.TestLogger, config *util.ControllerConfig) *ControllerFixture {
+	f := &ControllerFixture{
+		stopChan: make(chan struct{}),
+	}
+
+	err := federatedtypeconfig.StartController(config, f.stopChan)
+	if err != nil {
+		tl.Fatalf("Error starting federatedtypeconfig controller: %v", err)
 	}
 	return f
 }
@@ -91,8 +106,8 @@ func NewClusterControllerFixture(tl common.TestLogger, config *util.ControllerCo
 	f := &ControllerFixture{
 		stopChan: make(chan struct{}),
 	}
-	clusterHealthCheckConfig := util.ClusterHealthCheckConfig{PeriodSeconds: 1, FailureThreshold: 1}
-	err := federatedcluster.StartClusterController(config, clusterHealthCheckConfig, f.stopChan)
+	clusterHealthCheckConfig := &util.ClusterHealthCheckConfig{PeriodSeconds: 1, FailureThreshold: 1}
+	err := kubefedcluster.StartClusterController(config, clusterHealthCheckConfig, f.stopChan)
 	if err != nil {
 		tl.Fatalf("Error starting cluster controller: %v", err)
 	}

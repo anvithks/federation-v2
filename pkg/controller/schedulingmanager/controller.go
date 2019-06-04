@@ -17,18 +17,17 @@ limitations under the License.
 package schedulingmanager
 
 import (
-	"github.com/golang/glog"
 	"github.com/pkg/errors"
 
 	"k8s.io/apimachinery/pkg/util/runtime"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/cache"
+	"k8s.io/klog"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	corev1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/schedulingpreference"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/pkg/schedulingtypes"
+	corev1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	"sigs.k8s.io/kubefed/pkg/controller/schedulingpreference"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/pkg/schedulingtypes"
 )
 
 type SchedulingManager struct {
@@ -63,16 +62,12 @@ func (s *SchedulerWrapper) HasPlugin(typeConfigName string) bool {
 }
 
 func StartSchedulingManager(config *util.ControllerConfig, stopChan <-chan struct{}) (*SchedulingManager, error) {
-	userAgent := "SchedulingManager"
-	kubeConfig := config.KubeConfig
-	restclient.AddUserAgent(kubeConfig, userAgent)
-
 	manager, err := newSchedulingManager(config)
 	if err != nil {
 		return nil, err
 	}
 
-	glog.Infof("Starting scheduling manager")
+	klog.Infof("Starting scheduling manager")
 	manager.Run(stopChan)
 	return manager, nil
 }
@@ -86,6 +81,10 @@ func newSchedulerWrapper(schedulerInterface schedulingtypes.Scheduler, stopChan 
 }
 
 func newSchedulingManager(config *util.ControllerConfig) (*SchedulingManager, error) {
+	userAgent := "SchedulingManager"
+	kubeConfig := restclient.CopyConfig(config.KubeConfig)
+	restclient.AddUserAgent(kubeConfig, userAgent)
+
 	c := &SchedulingManager{
 		config:     config,
 		schedulers: util.NewSafeMap(),
@@ -95,9 +94,9 @@ func newSchedulingManager(config *util.ControllerConfig) (*SchedulingManager, er
 
 	var err error
 	c.store, c.controller, err = util.NewGenericInformer(
-		config.KubeConfig,
-		config.FederationNamespace,
-		&corev1a1.FederatedTypeConfig{},
+		kubeConfig,
+		config.KubeFedNamespace,
+		&corev1b1.FederatedTypeConfig{},
 		util.NoResyncPeriod,
 		c.worker.EnqueueObject,
 	)
@@ -144,7 +143,7 @@ func (c *SchedulingManager) shutdown() {
 func (c *SchedulingManager) reconcile(qualifiedName util.QualifiedName) util.ReconciliationStatus {
 	key := qualifiedName.String()
 
-	glog.V(3).Infof("Running reconcile FederatedTypeConfig %q in scheduling manager", key)
+	klog.V(3).Infof("Running reconcile FederatedTypeConfig %q in scheduling manager", key)
 
 	typeConfigName := qualifiedName.Name
 	schedulingType := schedulingtypes.GetSchedulingType(typeConfigName)
@@ -165,26 +164,19 @@ func (c *SchedulingManager) reconcile(qualifiedName util.QualifiedName) util.Rec
 		return util.StatusAllOK
 	}
 
-	typeConfig := cachedObj.(*corev1a1.FederatedTypeConfig)
-	if typeConfig.Spec.PropagationEnabled == false || typeConfig.DeletionTimestamp != nil {
+	typeConfig := cachedObj.(*corev1b1.FederatedTypeConfig)
+	if !typeConfig.GetPropagationEnabled() || typeConfig.DeletionTimestamp != nil {
 		c.stopScheduler(schedulingKind, typeConfigName)
 		return util.StatusAllOK
 	}
 
 	// set name and group for the type config target
-	corev1a1.SetFederatedTypeConfigDefaults(typeConfig)
-
-	// TODO(marun) Replace with validation webhook
-	err = typeconfig.CheckTypeConfigName(typeConfig)
-	if err != nil {
-		runtime.HandleError(err)
-		return util.StatusError
-	}
+	corev1b1.SetFederatedTypeConfigDefaults(typeConfig)
 
 	// Scheduling preference controller is started on demand
 	abstractScheduler, ok := c.schedulers.Get(schedulingKind)
 	if !ok {
-		glog.Infof("Starting schedulingpreference controller for %s", schedulingKind)
+		klog.Infof("Starting schedulingpreference controller for %s", schedulingKind)
 		stopChan := make(chan struct{})
 		schedulerInterface, err := schedulingpreference.StartSchedulingPreferenceController(c.config, *schedulingType, stopChan)
 		if err != nil {
@@ -202,7 +194,7 @@ func (c *SchedulingManager) reconcile(qualifiedName util.QualifiedName) util.Rec
 	}
 
 	federatedKind := typeConfig.GetFederatedType().Kind
-	glog.Infof("Starting plugin %s for %s", federatedKind, schedulingKind)
+	klog.Infof("Starting plugin %s for %s", federatedKind, schedulingKind)
 	err = scheduler.StartPlugin(typeConfig)
 	if err != nil {
 		runtime.HandleError(errors.Wrapf(err, "Error starting plugin %s for %s", federatedKind, schedulingKind))
@@ -222,14 +214,14 @@ func (c *SchedulingManager) stopScheduler(schedulingKind, typeConfigName string)
 	scheduler := abstractScheduler.(*SchedulerWrapper)
 	if scheduler.HasPlugin(typeConfigName) {
 		kind, _ := scheduler.pluginMap.Get(typeConfigName)
-		glog.Infof("Stopping plugin %s for %s", kind.(string), schedulingKind)
+		klog.Infof("Stopping plugin %s for %s", kind.(string), schedulingKind)
 		scheduler.StopPlugin(kind.(string))
 		scheduler.pluginMap.Delete(typeConfigName)
 	}
 
 	// If all plugins associated with this scheduler are gone, the scheduler should also be stopped.
 	if scheduler.pluginMap.Size() == 0 {
-		glog.Infof("Stopping schedulingpreference controller for %q", schedulingKind)
+		klog.Infof("Stopping schedulingpreference controller for %q", schedulingKind)
 		// Indicate scheduler and associated goroutines to be stopped in schedulingpreference controller.
 		close(scheduler.stopChan)
 		c.schedulers.Delete(schedulingKind)

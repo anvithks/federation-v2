@@ -23,11 +23,6 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -37,13 +32,18 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 	clientcmdapi "k8s.io/client-go/tools/clientcmd/api"
 
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/test/common"
+
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 )
 
 var (
 	clusterControllerFixture *ControllerFixture
-	args                     util.ControllerConfig
 	// The client and set of deleted namespaces is used on suite
 	// teardown to ensure namespaces are deleted before finalizing
 	// controllers can be shutdown.
@@ -51,7 +51,7 @@ var (
 	deletedNamespaces []string
 )
 
-func SetUpUnmanagedFederation() {
+func SetUpControlPlane() {
 	if clusterControllerFixture != nil {
 		return
 	}
@@ -60,15 +60,14 @@ func SetUpUnmanagedFederation() {
 	Expect(err).NotTo(HaveOccurred())
 
 	clusterControllerFixture = NewClusterControllerFixture(NewE2ELogger(), &util.ControllerConfig{
-		FederationNamespaces: util.FederationNamespaces{
-			FederationNamespace: TestContext.FederationSystemNamespace,
-			ClusterNamespace:    TestContext.ClusterNamespace,
+		KubeFedNamespaces: util.KubeFedNamespaces{
+			KubeFedNamespace: TestContext.KubeFedSystemNamespace,
 		},
 		KubeConfig: config,
 	})
 }
 
-func TearDownUnmanagedFederation() {
+func TearDownControlPlane() {
 	if TestContext.InMemoryControllers {
 		if clusterControllerFixture != nil {
 			clusterControllerFixture.TearDown(NewE2ELogger())
@@ -100,7 +99,7 @@ type UnmanagedFramework struct {
 	logger common.TestLogger
 }
 
-func NewUnmanagedFramework(baseName string) FederationFrameworkImpl {
+func NewUnmanagedFramework(baseName string) KubeFedFrameworkImpl {
 	f := &UnmanagedFramework{
 		BaseName: baseName,
 		logger:   NewE2ELogger(),
@@ -108,7 +107,7 @@ func NewUnmanagedFramework(baseName string) FederationFrameworkImpl {
 	return f
 }
 
-// BeforeEach checks for federation apiserver is ready and makes a namespace.
+// BeforeEach reads the cluster configuration if it has not yet been read.
 func (f *UnmanagedFramework) BeforeEach() {
 	// The fact that we need this feels like a bug in ginkgo.
 	// https://github.com/onsi/ginkgo/issues/222
@@ -143,8 +142,8 @@ func (f *UnmanagedFramework) AfterEach() {
 		namespaceName := f.testNamespaceName
 		f.testNamespaceName = ""
 
-		// Running namespaced implies the test namespace is the
-		// federation system namespace, which should not be removed.
+		// Running namespaced implies that the test namespace is the
+		// KubeFed system namespace and should not be removed.
 		if !TestContext.LimitedScope {
 			client := f.KubeClient(userAgent)
 			deleteNamespace(client, namespaceName)
@@ -155,17 +154,16 @@ func (f *UnmanagedFramework) AfterEach() {
 	if CurrentGinkgoTestDescription().Failed && f.testNamespaceName != "" {
 		kubeClient := f.KubeClient(userAgent)
 		DumpEventsInNamespace(func(opts metav1.ListOptions, ns string) (*corev1.EventList, error) {
-			return kubeClient.Core().Events(ns).List(opts)
+			return kubeClient.CoreV1().Events(ns).List(opts)
 		}, f.testNamespaceName)
 	}
 }
 
 func (f *UnmanagedFramework) ControllerConfig() *util.ControllerConfig {
 	return &util.ControllerConfig{
-		FederationNamespaces: util.FederationNamespaces{
-			FederationNamespace: TestContext.FederationSystemNamespace,
-			ClusterNamespace:    TestContext.ClusterNamespace,
-			TargetNamespace:     f.inMemoryTargetNamespace(),
+		KubeFedNamespaces: util.KubeFedNamespaces{
+			KubeFedNamespace: TestContext.KubeFedSystemNamespace,
+			TargetNamespace:  f.inMemoryTargetNamespace(),
 		},
 		KubeConfig:      f.Config,
 		MinimizeLatency: true,
@@ -193,8 +191,8 @@ func (f *UnmanagedFramework) Client(userAgent string) genericclient.Client {
 func (f *UnmanagedFramework) ClusterNames(userAgent string) []string {
 	var clusters []string
 	client := f.Client(userAgent)
-	clusterList := &fedv1a1.FederatedClusterList{}
-	err := client.List(context.TODO(), clusterList, TestContext.FederationSystemNamespace)
+	clusterList := &fedv1b1.KubeFedClusterList{}
+	err := client.List(context.TODO(), clusterList, TestContext.KubeFedSystemNamespace)
 	ExpectNoError(err, fmt.Sprintf("Error retrieving list of federated clusters: %+v", err))
 
 	for _, cluster := range clusterList.Items {
@@ -213,8 +211,8 @@ func (f *UnmanagedFramework) ClusterDynamicClients(apiResource *metav1.APIResour
 		// Check if this cluster is the same name as the host cluster name to
 		// make it the primary cluster.
 		testClusters[clusterName] = common.TestCluster{
-			clusterConfig,
-			client,
+			TestClusterConfig: clusterConfig,
+			Client:            client,
 		}
 	}
 	return testClusters
@@ -241,33 +239,33 @@ func (f *UnmanagedFramework) ClusterConfigs(userAgent string) map[string]common.
 
 	By("Obtaining a list of federated clusters")
 	client := f.Client(userAgent)
-	clusterList := ListFederatedClusters(NewE2ELogger(), client, TestContext.FederationSystemNamespace)
+	clusterList := ListKubeFedClusters(NewE2ELogger(), client, TestContext.KubeFedSystemNamespace)
 
 	// Assume host cluster name is the same as the current context name.
 	hostClusterName := f.Kubeconfig.CurrentContext
 
 	clusterConfigs := make(map[string]common.TestClusterConfig)
 	for _, cluster := range clusterList.Items {
-		config, err := util.BuildClusterConfig(&cluster, client, TestContext.FederationSystemNamespace, TestContext.ClusterNamespace)
+		config, err := util.BuildClusterConfig(&cluster, client, TestContext.KubeFedSystemNamespace)
 		Expect(err).NotTo(HaveOccurred())
 		restclient.AddUserAgent(config, userAgent)
 		clusterConfigs[cluster.Name] = common.TestClusterConfig{
-			config,
-			(cluster.Name == hostClusterName),
+			Config:    config,
+			IsPrimary: (cluster.Name == hostClusterName),
 		}
 	}
 
 	return clusterConfigs
 }
 
-func (f *UnmanagedFramework) FederationSystemNamespace() string {
-	return TestContext.FederationSystemNamespace
+func (f *UnmanagedFramework) KubeFedSystemNamespace() string {
+	return TestContext.KubeFedSystemNamespace
 }
 
 func (f *UnmanagedFramework) TestNamespaceName() string {
 	if f.testNamespaceName == "" {
 		if TestContext.LimitedScope {
-			f.testNamespaceName = TestContext.FederationSystemNamespace
+			f.testNamespaceName = TestContext.KubeFedSystemNamespace
 		} else {
 			client := f.KubeClient(fmt.Sprintf("%s-create-namespace", f.BaseName))
 			f.testNamespaceName = createTestNamespace(client, f.BaseName)
@@ -290,7 +288,7 @@ func (f *UnmanagedFramework) setUpSyncControllerFixture(typeConfig typeconfig.In
 	if TestContext.InMemoryControllers {
 		controllerConfig := f.ControllerConfig()
 		// Namespaces are cluster scoped so all namespaces must be targeted
-		if typeConfig.GetTarget().Kind == util.NamespaceKind {
+		if typeConfig.GetTargetType().Kind == util.NamespaceKind {
 			controllerConfig.TargetNamespace = metav1.NamespaceAll
 		}
 		return NewSyncControllerFixture(f.logger, controllerConfig, typeConfig, namespacePlacement)
@@ -300,7 +298,7 @@ func (f *UnmanagedFramework) setUpSyncControllerFixture(typeConfig typeconfig.In
 
 func deleteNamespace(client kubeclientset.Interface, namespaceName string) {
 	orphanDependents := false
-	if err := client.Core().Namespaces().Delete(namespaceName, &metav1.DeleteOptions{OrphanDependents: &orphanDependents}); err != nil {
+	if err := client.CoreV1().Namespaces().Delete(namespaceName, &metav1.DeleteOptions{OrphanDependents: &orphanDependents}); err != nil {
 		if !apierrors.IsNotFound(err) {
 			Failf("Error while deleting namespace %s: %s", namespaceName, err)
 		}
@@ -333,7 +331,7 @@ func deleteNamespace(client kubeclientset.Interface, namespaceName string) {
 
 func waitForNamespaceDeletion(client kubeclientset.Interface, namespace string) error {
 	err := wait.PollImmediate(PollInterval, TestContext.SingleCallTimeout, func() (bool, error) {
-		if _, err := client.Core().Namespaces().Get(namespace, metav1.GetOptions{}); err != nil {
+		if _, err := client.CoreV1().Namespaces().Get(namespace, metav1.GetOptions{}); err != nil {
 			if apierrors.IsNotFound(err) {
 				return true, nil
 			}
@@ -403,5 +401,5 @@ func WaitForUnmanagedClusterReadiness() {
 	Expect(err).NotTo(HaveOccurred())
 	restclient.AddUserAgent(config, "readiness-check")
 	client := genericclient.NewForConfigOrDie(config)
-	WaitForClusterReadiness(NewE2ELogger(), client, TestContext.FederationSystemNamespace, PollInterval, TestContext.SingleCallTimeout)
+	WaitForClusterReadiness(NewE2ELogger(), client, TestContext.KubeFedSystemNamespace, PollInterval, TestContext.SingleCallTimeout)
 }

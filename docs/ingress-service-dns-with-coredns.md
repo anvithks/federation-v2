@@ -2,10 +2,10 @@
 <!-- DON'T EDIT THIS SECTION, INSTEAD RE-RUN doctoc TO UPDATE -->
 **Table of Contents**  *generated with [DocToc](https://github.com/thlorenz/doctoc)*
 
-- [Federation DNS for Ingress and Service](#federation-dns-for-ingress-and-service)
-  - [Creating federation cluster](#creating-federation-cluster)
+- [KubeFed DNS for Ingress and Service](#kubefed-dns-for-ingress-and-service)
+  - [Creating KubeFed cluster](#creating-kubefed-cluster)
   - [Installing ExternalDNS](#installing-externaldns)
-  - [Enable DNS for federation resources](#enable-dns-for-federation-resources)
+  - [Enable DNS for KubeFed resources](#enable-dns-for-kubefed-resources)
     - [Installing MetalLB for LoadBalancer Service](#installing-metallb-for-loadbalancer-service)
     - [Creating service resources](#creating-service-resources)
     - [Enable the ingress controller](#enable-the-ingress-controller)
@@ -14,27 +14,27 @@
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
-# Federation DNS for Ingress and Service
+# KubeFed DNS for Ingress and Service
 
-This tutorial describes how to set up a federation cluster DNS with [ExternalDNS](https://github.com/kubernetes-incubator/external-dns/) based on [CoreDNS](https://github.com/coredns/coredns) in [minikube](https://github.com/kubernetes/minikube) clusters. It provides guidance for the following steps:
+This tutorial describes how to set up a KubeFed cluster DNS with [ExternalDNS](https://github.com/kubernetes-incubator/external-dns/) based on [CoreDNS](https://github.com/coredns/coredns) in [minikube](https://github.com/kubernetes/minikube) clusters. It provides guidance for the following steps:
 
 - Install ExternalDNS with etcd enabled CoreDNS as a provider
 - Install [ingress controller](https://github.com/kubernetes/ingress-nginx) for your minikube clusters to enable Ingress resource
 - Install [metallb](https://github.com/google/metallb) for your minikube clusters to enable LoadBalancer Service
 
 You can use either Loadbalancer Service or Ingress resource or both in your environment, this tutorial includes guidance for both Loadbalancer Service and Ingress resource.
-For related conceptions of Muilti-cluster Ingress and Service, you can refer to [ingressdns-with-externaldns.md](https://github.com/kubernetes-sigs/federation-v2/blob/master/docs/ingressdns-with-externaldns.md) and [servicedns-with-externaldns.md](https://github.com/kubernetes-sigs/federation-v2/blob/master/docs/servicedns-with-externaldns.md).
+For related conceptions of Muilti-cluster Ingress and Service, you can refer to [ingressdns-with-externaldns.md](https://github.com/kubernetes-sigs/kubefed/blob/master/docs/ingressdns-with-externaldns.md) and [servicedns-with-externaldns.md](https://github.com/kubernetes-sigs/kubefed/blob/master/docs/servicedns-with-externaldns.md).
 
-## Creating federation cluster
+## Creating KubeFed cluster
 
-Install Federation-v2 with minikube in [User Guide](https://github.com/kubernetes-sigs/federation-v2/blob/master/docs/userguide.md).
+Install KubeFed with minikube in [User Guide](https://github.com/kubernetes-sigs/kubefed/blob/master/docs/userguide.md).
 
 ## Installing ExternalDNS
 
 Install ExternalDNS with CoreDNS as backend in your host cluster. You can follow the [tutorial](https://github.com/kubernetes-incubator/external-dns/blob/master/docs/tutorials/coredns.md).  
 **Note**: You should replace `parameters: example.org` with `parameters: example.com` when [Installing CoreDNS](https://github.com/kubernetes-incubator/external-dns/blob/master/docs/tutorials/coredns.md#installing-coredns)
 
-To make it work for federation resources, you need to use below ExternalDNS deployment instead of the one in the tutorial.
+To make it work for KubeFed resources, you need to use below ExternalDNS deployment instead of the one in the tutorial.
 **Note**: You should replace value of `ETCD_URLS` with your own etcd client service IP address.
 
 ```bash
@@ -62,7 +62,7 @@ spec:
         image: registry.opensource.zalan.do/teapot/external-dns:latest
         args:
         - --source=crd
-        - --crd-source-apiversion=multiclusterdns.federation.k8s.io/v1alpha1
+        - --crd-source-apiversion=multiclusterdns.kubefed.k8s.io/v1alpha1
         - --crd-source-kind=DNSEndpoint
         - --registry=txt
         - --provider=coredns
@@ -73,7 +73,7 @@ spec:
 EOF
 ```
 
-## Enable DNS for federation resources
+## Enable DNS for KubeFed resources
 
 ### Installing MetalLB for LoadBalancer Service
 
@@ -126,7 +126,7 @@ EOF
 
 ### Creating service resources
 
-After metallb works, create a sample deployment and service from [sample](https://github.com/kubernetes-sigs/federation-v2/blob/master/docs/ingressdns-with-externaldns.md). Make service as LoadBalancer type.
+After metallb works, create a sample deployment and service from [sample](https://github.com/kubernetes-sigs/kubefed/blob/master/docs/ingressdns-with-externaldns.md). Make service as LoadBalancer type.
 
 ```bash
 sed -i 's/NodePort/LoadBalancer/' example/sample1/federatedservice.yaml
@@ -136,17 +136,17 @@ Create `ServiceDNSRecord` to make DNS work for service.
 
 ```bash
 $ cat <<EOF | kubectl create -f -
-apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
 kind: Domain
 metadata:
   # Corresponds to <federation> in the resource records.
   name: test-domain
-  # The namespace running federation-controller-manager.
-  namespace: federation-system
+  # The namespace running kubefed-controller-manager.
+  namespace: kube-federation-system
 # The domain/subdomain that is setup in your externl-dns provider.
 domain: example.com
 ---
-apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
 kind: ServiceDNSRecord
 metadata:
   # The name of the sample service.
@@ -172,7 +172,7 @@ $ kubectl --context cluster2 apply -f https://raw.githubusercontent.com/kubernet
 $ kubectl --context cluster2 patch svc ingress-nginx -n ingress-nginx -p '{"spec": {"type": "LoadBalancer"}}'
 ```
 
-After ingress controller enabled, create a sample deployment, service and ingress from [sample](https://github.com/kubernetes-sigs/federation-v2/blob/master/docs/ingressdns-with-externaldns.md).
+After ingress controller enabled, create a sample deployment, service and ingress from [sample](https://github.com/kubernetes-sigs/kubefed/blob/master/docs/ingressdns-with-externaldns.md).
 
 ### Creating ingress resources
 
@@ -180,7 +180,7 @@ Create `IngressDNSRecord` to make DNS work for ingress.
 
 ```bash
 $ cat <<EOF | kubectl create -f -
-apiVersion: multiclusterdns.federation.k8s.io/v1alpha1
+apiVersion: multiclusterdns.kubefed.k8s.io/v1alpha1
 kind: IngressDNSRecord
 metadata:
   name: test-ingress

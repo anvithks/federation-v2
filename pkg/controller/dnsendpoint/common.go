@@ -20,12 +20,11 @@ import (
 	"net"
 	"sort"
 
-	"github.com/golang/glog"
-
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/klog"
 
-	feddnsv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/multiclusterdns/v1alpha1"
+	feddnsv1a1 "sigs.k8s.io/kubefed/pkg/apis/multiclusterdns/v1alpha1"
 )
 
 const (
@@ -49,11 +48,7 @@ func (r *NetWrapperDefaultImplementation) LookupHost(host string) (addrs []strin
 	return net.LookupHost(host)
 }
 
-var netWrapper NetWrapper
-
-func init() {
-	netWrapper = &NetWrapperDefaultImplementation{}
-}
+var netWrapper NetWrapper = &NetWrapperDefaultImplementation{}
 
 // getResolvedTargets performs DNS resolution on the provided slice of endpoints (which might be DNS names
 // or IPv4 addresses) and returns a list of IPv4 addresses.  If any of the endpoints are neither valid IPv4
@@ -68,7 +63,7 @@ func getResolvedTargets(targets feddnsv1a1.Targets, netWrapper NetWrapper) (fedd
 			// through an interface abstracting the internet
 			ipAddrs, err := netWrapper.LookupHost(target)
 			if err != nil {
-				glog.Errorf("Failed to resolve %s, err: %v", target, err)
+				klog.Errorf("Failed to resolve %s, err: %v", target, err)
 				return resolvedTargets.List(), err
 			}
 			for _, ip := range ipAddrs {

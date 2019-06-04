@@ -17,9 +17,10 @@ limitations under the License.
 package schedulingtypes
 
 import (
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	. "github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
 	pkgruntime "k8s.io/apimachinery/pkg/runtime"
+
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	. "sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
 type Scheduler interface {
@@ -36,7 +37,7 @@ type Scheduler interface {
 }
 
 type SchedulerEventHandlers struct {
-	FederationEventHandler   func(pkgruntime.Object)
+	KubeFedEventHandler      func(pkgruntime.Object)
 	ClusterEventHandler      func(pkgruntime.Object)
 	ClusterLifecycleHandlers *ClusterLifecycleHandlerFuncs
 }

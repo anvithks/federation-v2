@@ -27,12 +27,12 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	kubeclientset "k8s.io/client-go/kubernetes"
 
-	"github.com/kubernetes-sigs/federation-v2/pkg/apis/core/typeconfig"
-	genericclient "github.com/kubernetes-sigs/federation-v2/pkg/client/generic"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-	"github.com/kubernetes-sigs/federation-v2/pkg/kubefed2/federate"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
+	"sigs.k8s.io/kubefed/pkg/apis/core/typeconfig"
+	genericclient "sigs.k8s.io/kubefed/pkg/client/generic"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/pkg/kubefedctl/federate"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
@@ -40,7 +40,7 @@ import (
 type testObjectsAccessor func(namespace string, clusterNames []string) (targetObject *unstructured.Unstructured, overrides []interface{}, err error)
 
 var _ = Describe("Federated", func() {
-	f := framework.NewFederationFramework("federated-types")
+	f := framework.NewKubeFedFramework("federated-types")
 
 	tl := framework.NewE2ELogger()
 
@@ -60,12 +60,61 @@ var _ = Describe("Federated", func() {
 				crudTester.CheckLifecycle(targetObject, overrides)
 			})
 
-			// Unlabeled resource handling behavior should not vary between
-			// types, so testing a single type is sufficient.  Picking a
-			// namespaced type minimizes the impact of teardown failure.
+			// Labeling behavior should not vary between types, so testing a
+			// single type is sufficient.  Picking a namespaced type minimizes
+			// the impact of teardown failure.
 			if typeConfigName != "configmaps" {
 				return
 			}
+
+			It("should have the managed label removed if not managed", func() {
+				typeConfig, testObjectsFunc := getCrudTestInput(f, tl, typeConfigName, fixture)
+				crudTester, targetObject, _ := initCrudTest(f, tl, typeConfig, testObjectsFunc)
+
+				testClusters := crudTester.TestClusters()
+
+				By("Selecting a member cluster to create an unlabeled resource in")
+				clusterName := ""
+				for key := range testClusters {
+					clusterName = key
+					break
+				}
+				clusterConfig := testClusters[clusterName].Config
+
+				By("Waiting for the test namespace to be created in the selected cluster")
+				kubeClient := kubeclientset.NewForConfigOrDie(clusterConfig)
+				common.WaitForNamespaceOrDie(tl, kubeClient, clusterName, targetObject.GetNamespace(),
+					framework.PollInterval, framework.TestContext.SingleCallTimeout)
+
+				By("Creating a labeled resource in the selected cluster")
+				util.AddManagedLabel(targetObject)
+				labeledObj, err := common.CreateResource(clusterConfig, typeConfig.GetTargetType(), targetObject)
+				if err != nil {
+					tl.Fatalf("Failed to create labeled resource in cluster %q: %v", clusterName, err)
+				}
+				clusterClient := genericclient.NewForConfigOrDie(clusterConfig)
+				defer func() {
+					err := clusterClient.Delete(context.TODO(), labeledObj, labeledObj.GetNamespace(), labeledObj.GetName())
+					if err != nil {
+						tl.Fatalf("Unexpected error: %v", err)
+					}
+				}()
+
+				By("Checking that the labeled resource is unlabeled by the sync controller")
+				err = wait.PollImmediate(framework.PollInterval, wait.ForeverTestTimeout, func() (bool, error) {
+					obj := &unstructured.Unstructured{}
+					obj.SetGroupVersionKind(labeledObj.GroupVersionKind())
+					err := clusterClient.Get(context.TODO(), obj, labeledObj.GetNamespace(), labeledObj.GetName())
+					if err != nil {
+						tl.Errorf("Error retrieving labeled resource: %v", err)
+						return false, nil
+					}
+					return !util.HasManagedLabel(obj), nil
+				})
+				if err != nil {
+					tl.Fatal("Timed out waiting for the managed label to be removed")
+				}
+			})
 
 			It("should not be deleted if unlabeled", func() {
 				typeConfig, testObjectsFunc := getCrudTestInput(f, tl, typeConfigName, fixture)
@@ -87,12 +136,17 @@ var _ = Describe("Federated", func() {
 					framework.PollInterval, framework.TestContext.SingleCallTimeout)
 
 				By("Creating an unlabeled resource in the selected cluster")
-				unlabeledObj, err := common.CreateResource(clusterConfig, typeConfig.GetTarget(), targetObject)
+				unlabeledObj, err := common.CreateResource(clusterConfig, typeConfig.GetTargetType(), targetObject)
 				if err != nil {
 					tl.Fatalf("Failed to create unlabeled resource in cluster %q: %v", clusterName, err)
 				}
 				clusterClient := genericclient.NewForConfigOrDie(clusterConfig)
-				defer clusterClient.Delete(context.TODO(), unlabeledObj, unlabeledObj.GetNamespace(), unlabeledObj.GetName())
+				defer func() {
+					err := clusterClient.Delete(context.TODO(), unlabeledObj, unlabeledObj.GetNamespace(), unlabeledObj.GetName())
+					if err != nil {
+						tl.Fatalf("Unexpected error: %v", err)
+					}
+				}()
 
 				By("Intitializing a federated resource with placement excluding all clusters")
 				fedObject, err := federate.FederatedResourceFromTargetResource(typeConfig, unlabeledObj)
@@ -111,16 +165,21 @@ var _ = Describe("Federated", func() {
 					tl.Fatalf("Error creating federated resource: %v", err)
 				}
 				hostClient := genericclient.NewForConfigOrDie(f.KubeConfig())
-				defer hostClient.Delete(context.TODO(), createdObj, createdObj.GetNamespace(), createdObj.GetName())
+				defer func() {
+					err := hostClient.Delete(context.TODO(), createdObj, createdObj.GetNamespace(), createdObj.GetName())
+					if err != nil {
+						tl.Fatalf("Unexpected error: %v", err)
+					}
+				}()
 
 				waitDuration := 10 * time.Second // Arbitrary amount of time to wait for deletion
 				By(fmt.Sprintf("Checking that the unlabeled resource is not deleted within %v", waitDuration))
-				wait.PollImmediate(framework.PollInterval, waitDuration, func() (bool, error) {
+				_ = wait.PollImmediate(framework.PollInterval, waitDuration, func() (bool, error) {
 					obj := &unstructured.Unstructured{}
 					obj.SetGroupVersionKind(unlabeledObj.GroupVersionKind())
 					err := clusterClient.Get(context.TODO(), obj, unlabeledObj.GetNamespace(), unlabeledObj.GetName())
 					if apierrors.IsNotFound(err) {
-						tl.Fatalf("Unlabeled resource %s %q was deleted", typeConfig.GetTarget().Kind, util.NewQualifiedName(unlabeledObj))
+						tl.Fatalf("Unlabeled resource %s %q was deleted", typeConfig.GetTargetType().Kind, util.NewQualifiedName(unlabeledObj))
 					}
 					if err != nil {
 						tl.Errorf("Error retrieving unlabeled resource: %v", err)
@@ -132,7 +191,7 @@ var _ = Describe("Federated", func() {
 	}
 })
 
-func getCrudTestInput(f framework.FederationFramework, tl common.TestLogger,
+func getCrudTestInput(f framework.KubeFedFramework, tl common.TestLogger,
 	typeConfigName string, fixture *unstructured.Unstructured) (
 	typeconfig.Interface, testObjectsAccessor) {
 
@@ -141,7 +200,7 @@ func getCrudTestInput(f framework.FederationFramework, tl common.TestLogger,
 	if err != nil {
 		tl.Fatalf("Error initializing dynamic client: %v", err)
 	}
-	typeConfig, err := common.GetTypeConfig(client, typeConfigName, f.FederationSystemNamespace())
+	typeConfig, err := common.GetTypeConfig(client, typeConfigName, f.KubeFedSystemNamespace())
 	if err != nil {
 		tl.Fatalf("Error retrieving federatedtypeconfig %q: %v", typeConfigName, err)
 	}
@@ -155,7 +214,7 @@ func getCrudTestInput(f framework.FederationFramework, tl common.TestLogger,
 		if err != nil {
 			return nil, nil, err
 		}
-		if typeConfig.GetTarget().Kind == util.NamespaceKind {
+		if typeConfig.GetTargetType().Kind == util.NamespaceKind {
 			// Namespace crud testing needs to have the same name as its namespace.
 			targetObject.SetName(namespace)
 			targetObject.SetNamespace(namespace)
@@ -169,7 +228,7 @@ func getCrudTestInput(f framework.FederationFramework, tl common.TestLogger,
 	return typeConfig, testObjectsFunc
 }
 
-func initCrudTest(f framework.FederationFramework, tl common.TestLogger,
+func initCrudTest(f framework.KubeFedFramework, tl common.TestLogger,
 	typeConfig typeconfig.Interface, testObjectsFunc testObjectsAccessor) (
 	*common.FederatedTypeCrudTester, *unstructured.Unstructured, []interface{}) {
 
@@ -188,7 +247,7 @@ func initCrudTest(f framework.FederationFramework, tl common.TestLogger,
 	userAgent := fmt.Sprintf("test-%s-crud", strings.ToLower(federatedKind))
 
 	kubeConfig := f.KubeConfig()
-	targetAPIResource := typeConfig.GetTarget()
+	targetAPIResource := typeConfig.GetTargetType()
 	testClusters := f.ClusterDynamicClients(&targetAPIResource, userAgent)
 	crudTester, err := common.NewFederatedTypeCrudTester(tl, typeConfig, kubeConfig, testClusters, framework.PollInterval, framework.TestContext.SingleCallTimeout)
 	if err != nil {
@@ -198,7 +257,7 @@ func initCrudTest(f framework.FederationFramework, tl common.TestLogger,
 	namespace := ""
 	// A test namespace is only required for namespaced resources or
 	// namespaces themselves.
-	if typeConfig.GetNamespaced() || typeConfig.GetTarget().Name == util.NamespaceName {
+	if typeConfig.GetNamespaced() || typeConfig.GetTargetType().Name == util.NamespaceName {
 		namespace = f.TestNamespaceName()
 	}
 

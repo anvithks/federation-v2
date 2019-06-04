@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-TARGET = federation-v2
-GOTARGET = github.com/kubernetes-sigs/$(TARGET)
+SHELL := /bin/bash
+TARGET = kubefed
+GOTARGET = sigs.k8s.io/$(TARGET)
 REGISTRY ?= quay.io/kubernetes-multicluster
 IMAGE = $(REGISTRY)/$(TARGET)
 DIR := ${CURDIR}
@@ -26,7 +27,7 @@ GIT_TAG ?= $(shell git describe --tags --exact-match 2>/dev/null)
 GIT_HASH ?= $(shell git rev-parse HEAD)
 BUILDDATE = $(shell date -u +'%Y-%m-%dT%H:%M:%SZ')
 
-# Note: this is allowed to be overridden for scripts/deploy-federation.sh
+# Note: this is allowed to be overridden for scripts/deploy-kubefed.sh
 IMAGE_NAME = $(REGISTRY)/$(TARGET):$(GIT_VERSION)
 
 GIT_TREESTATE = "clean"
@@ -39,16 +40,19 @@ ifneq ($(VERBOSE),)
 VERBOSE_FLAG = -v
 endif
 BUILDMNT = /go/src/$(GOTARGET)
-BUILD_IMAGE ?= golang:1.11.2
+# The version here should match the version of go configured in
+# .travis.yml
+BUILD_IMAGE ?= golang:1.12.5
 
 HYPERFED_TARGET = bin/hyperfed
 CONTROLLER_TARGET = bin/controller-manager
-KUBEFED2_TARGET = bin/kubefed2
+KUBEFEDCTL_TARGET = bin/kubefedctl
+WEBHOOK_TARGET = bin/webhook
 
-LDFLAG_OPTIONS = -ldflags "-X github.com/kubernetes-sigs/federation-v2/pkg/version.version=$(GIT_VERSION) \
-                      -X github.com/kubernetes-sigs/federation-v2/pkg/version.gitCommit=$(GIT_HASH) \
-                      -X github.com/kubernetes-sigs/federation-v2/pkg/version.gitTreeState=$(GIT_TREESTATE) \
-                      -X github.com/kubernetes-sigs/federation-v2/pkg/version.buildDate=$(BUILDDATE)"
+LDFLAG_OPTIONS = -ldflags "-X sigs.k8s.io/kubefed/pkg/version.version=$(GIT_VERSION) \
+                      -X sigs.k8s.io/kubefed/pkg/version.gitCommit=$(GIT_HASH) \
+                      -X sigs.k8s.io/kubefed/pkg/version.gitTreeState=$(GIT_TREESTATE) \
+                      -X sigs.k8s.io/kubefed/pkg/version.buildDate=$(BUILDDATE)"
 
 GO_BUILDCMD = CGO_ENABLED=0 go build $(VERBOSE_FLAG) $(LDFLAG_OPTIONS)
 
@@ -60,15 +64,15 @@ TEST = $(TEST_CMD) $(TEST_PKGS)
 DOCKER_BUILD ?= $(DOCKER) run --rm -v $(DIR):$(BUILDMNT) -w $(BUILDMNT) $(BUILD_IMAGE) /bin/sh -c
 
 # TODO (irfanurrehman): can add local compile, and auto-generate targets also if needed
-.PHONY: all container push clean hyperfed controller kubefed2 test local-test vet fmt build bindir generate
+.PHONY: all container push clean hyperfed controller kubefedctl test local-test vet fmt build bindir generate webhook
 
-all: container hyperfed controller kubefed2
+all: container hyperfed controller kubefedctl webhook
 
 # Unit tests
 test: vet
 	go test $(TEST_PKGS)
 
-build: hyperfed controller kubefed2
+build: hyperfed controller kubefedctl webhook
 
 vet:
 	go vet $(TEST_PKGS)
@@ -77,14 +81,14 @@ fmt:
 	$(shell ./hack/update-gofmt.sh)
 
 container: $(HYPERFED_TARGET)-linux
-	cp -f $(HYPERFED_TARGET)-linux images/federation-v2/hyperfed
-	$(DOCKER) build images/federation-v2 -t $(IMAGE_NAME)
-	rm -f images/federation-v2/hyperfed
+	cp -f $(HYPERFED_TARGET)-linux images/kubefed/hyperfed
+	$(DOCKER) build images/kubefed -t $(IMAGE_NAME)
+	rm -f images/kubefed/hyperfed
 
 bindir:
 	mkdir -p $(BIN_DIR)
 
-COMMANDS := $(HYPERFED_TARGET) $(CONTROLLER_TARGET) $(KUBEFED2_TARGET)
+COMMANDS := $(HYPERFED_TARGET) $(CONTROLLER_TARGET) $(KUBEFEDCTL_TARGET) $(WEBHOOK_TARGET)
 OSES := linux darwin
 ALL_BINS :=
 
@@ -106,26 +110,43 @@ hyperfed: $(HYPERFED_TARGET)
 
 controller: $(CONTROLLER_TARGET)
 
-kubefed2: $(KUBEFED2_TARGET)
+kubefedctl: $(KUBEFEDCTL_TARGET)
+
+webhook: $(WEBHOOK_TARGET)
 
 # Generate code
-generate: kubefed2
+generate-code:
 ifndef GOPATH
 	$(error GOPATH not defined, please define GOPATH. Run "go help gopath" to learn more about GOPATH)
 endif
 	go generate ./pkg/... ./cmd/...
+
+generate: generate-code kubefedctl
 	./scripts/sync-up-helm-chart.sh
 
-push:
-	$(DOCKER) push $(REGISTRY)/$(TARGET):$(GIT_VERSION)
-	if git describe --tags --exact-match >/dev/null 2>&1; \
+push: container
+
+	if [[ -z "$(TRAVIS_PULL_REQUEST)" ]]; \
 	then \
-		$(DOCKER) tag $(REGISTRY)/$(TARGET):$(GIT_VERSION) $(REGISTRY)/$(TARGET):$(GIT_TAG); \
-		$(DOCKER) push $(REGISTRY)/$(TARGET):$(GIT_TAG); \
-		$(DOCKER) tag $(REGISTRY)/$(TARGET):$(GIT_VERSION) $(REGISTRY)/$(TARGET):latest; \
-		$(DOCKER) push $(REGISTRY)/$(TARGET):latest; \
+		$(DOCKER) push $(IMAGE):$(GIT_VERSION); \
+	elif [[ "$(TRAVIS_PULL_REQUEST)" == "false" && "$(TRAVIS_SECURE_ENV_VARS)" == "true" ]]; \
+	then \
+		$(DOCKER) login -u "$(QUAY_USERNAME)" -p "$(QUAY_PASSWORD)" quay.io; \
+		if [[ "$(TRAVIS_BRANCH)" == "master" ]]; \
+		then \
+			$(DOCKER) tag $(IMAGE):$(GIT_VERSION) $(IMAGE):canary; \
+			$(DOCKER) push $(IMAGE):canary; \
+		fi; \
+		\
+		if git describe --tags --exact-match >/dev/null 2>&1; \
+		then \
+			$(DOCKER) tag $(IMAGE):$(GIT_VERSION) $(IMAGE):$(GIT_TAG); \
+			$(DOCKER) push $(IMAGE):$(GIT_TAG); \
+			$(DOCKER) tag $(IMAGE):$(GIT_VERSION) $(IMAGE):latest; \
+			$(DOCKER) push $(IMAGE):latest; \
+		fi \
 	fi
 
 clean:
 	rm -f $(ALL_BINS)
-	$(DOCKER) rmi $(REGISTRY)/$(TARGET):$(GIT_VERSION) || true
+	$(DOCKER) rmi $(IMAGE):$(GIT_VERSION) || true

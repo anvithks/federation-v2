@@ -18,48 +18,32 @@ limitations under the License.
 package options
 
 import (
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
 	"github.com/spf13/pflag"
+
+	apiextv1b1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
+
+	"sigs.k8s.io/kubefed/pkg/controller/util"
 )
 
 // Options contains everything necessary to create and run controller-manager.
 type Options struct {
 	Config                   *util.ControllerConfig
 	FeatureGates             map[string]bool
-	LimitedScope             bool
+	Scope                    apiextv1b1.ResourceScope
 	LeaderElection           *util.LeaderElectionConfiguration
-	ClusterHealthCheckConfig util.ClusterHealthCheckConfig
+	ClusterHealthCheckConfig *util.ClusterHealthCheckConfig
 }
 
 // AddFlags adds flags to fs and binds them to options.
 func (o *Options) AddFlags(fs *pflag.FlagSet) {
-	fs.StringVar(&o.Config.FederationNamespace, "federation-namespace", util.DefaultFederationSystemNamespace, "The namespace the federation control plane is deployed in.")
-	o.setDefaults()
-}
-
-func (o *Options) setDefaults() {
-	o.FeatureGates = make(map[string]bool)
-	o.LimitedScope = false
-
-	o.Config.ClusterNamespace = util.MulticlusterPublicNamespace
-	o.Config.ClusterAvailableDelay = util.DefaultClusterAvailableDelay
-	o.Config.ClusterUnavailableDelay = util.DefaultClusterUnavailableDelay
-
-	o.LeaderElection.LeaseDuration = util.DefaultLeaderElectionLeaseDuration
-	o.LeaderElection.RenewDeadline = util.DefaultLeaderElectionRenewDeadline
-	o.LeaderElection.RetryPeriod = util.DefaultLeaderElectionRetryPeriod
-	o.LeaderElection.ResourceLock = "configmaps"
-
-	o.ClusterHealthCheckConfig.PeriodSeconds = util.DefaultClusterHealthCheckPeriod
-	o.ClusterHealthCheckConfig.FailureThreshold = util.DefaultClusterHealthCheckFailureThreshold
-	o.ClusterHealthCheckConfig.SuccessThreshold = util.DefaultClusterHealthCheckSuccessThreshold
-	o.ClusterHealthCheckConfig.TimeoutSeconds = util.DefaultClusterHealthCheckTimeout
+	fs.StringVar(&o.Config.KubeFedNamespace, "kubefed-namespace", util.DefaultKubeFedSystemNamespace, "The namespace the KubeFed control plane is deployed in.")
 }
 
 func NewOptions() *Options {
 	return &Options{
-		Config:         new(util.ControllerConfig),
-		FeatureGates:   make(map[string]bool),
-		LeaderElection: new(util.LeaderElectionConfiguration),
+		Config:                   new(util.ControllerConfig),
+		FeatureGates:             make(map[string]bool),
+		LeaderElection:           new(util.LeaderElectionConfiguration),
+		ClusterHealthCheckConfig: new(util.ClusterHealthCheckConfig),
 	}
 }

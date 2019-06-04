@@ -10,8 +10,8 @@
 
 # IBM Cloud Private Deployment Guide
 
-Federation v2 can be deployed to and manage [IBM Cloud Private](https://www.ibm.com/cloud/private) clusters.
-As Federation v2 requires Kubernetes v1.11 or greater, please make sure to deploy IBM Cloud Private 3.1.1
+KubeFed can be deployed to and manage [IBM Cloud Private](https://www.ibm.com/cloud/private) clusters.
+As KubeFed requires Kubernetes v1.13 or greater, please make sure to deploy IBM Cloud Private 3.1.1
 or higher.
 
 The following example deploys two IBM Cloud Private 3.1.1 clusters named `cluster1` and `cluster2`.
@@ -22,7 +22,7 @@ Please follow the [guide in IBM Cloud Private 3.1.1 Knowledge Center](https://ww
 to install.
 
 **NOTE:** We need to install two clusters named `cluster1` and `cluster2`, so after `cluster/config.yaml`
-is generated, update the names of the 2 clusters to 'cluster1' and 'cluster2' before installing federation.
+is generated, update the names of the 2 clusters to 'cluster1' and 'cluster2' before installing KubeFed.
 
 For the first cluster, set the following value in `cluster/config.yaml` as follows:
 
@@ -39,21 +39,21 @@ cluster_name: cluster2
 ## Post Install Configuration
 
 As IBM Cloud Private is [enforcing container image security](https://www.ibm.com/support/knowledgecenter/SSBS6K_3.1.1/manage_images/image_security.html)
-policy by default, and the default image security policy does not allow pulling the Federation v2
-image from `quay.io/kubernetes-multicluster/federation-v2:*`, we need to update the image security
+policy by default, and the default image security policy does not allow pulling the KubeFed
+image from `quay.io/kubernetes-multicluster/kubefed:*`, we need to update the image security
 policy as follows:
 
 ```bash
 $ kubectl edit clusterimagepolicies ibmcloud-default-cluster-image-policy
 ```
 
-Update `spec.repositories` by adding `quay.io/kubernetes-multicluster/federation-v2:*`:
+Update `spec.repositories` by adding `quay.io/kubernetes-multicluster/kubefed:*`:
 
 ```yaml
 spec:
   repositories:
-    - name: "quay.io/kubernetes-multicluster/federation-v2:*"
+    - name: "quay.io/kubernetes-multicluster/kubefed:*"
 ```
 
-Once all pods are running you can return to the [User Guide](../userguide.md) to deploy the cluster registry and
-Federation v2 control-plane.
+Once all pods are running you can return to the [User Guide](../userguide.md) to deploy the
+KubeFed control-plane.

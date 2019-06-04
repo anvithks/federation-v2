@@ -31,20 +31,19 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/rest"
 
-	apicommon "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/common"
-	fedv1a1 "github.com/kubernetes-sigs/federation-v2/pkg/apis/core/v1alpha1"
-	"github.com/kubernetes-sigs/federation-v2/pkg/controller/util"
-
-	"github.com/kubernetes-sigs/federation-v2/pkg/kubefed2"
-	kfenable "github.com/kubernetes-sigs/federation-v2/pkg/kubefed2/enable"
-	"github.com/kubernetes-sigs/federation-v2/test/common"
-	"github.com/kubernetes-sigs/federation-v2/test/e2e/framework"
+	fedv1b1 "sigs.k8s.io/kubefed/pkg/apis/core/v1beta1"
+	"sigs.k8s.io/kubefed/pkg/controller/util"
+	"sigs.k8s.io/kubefed/pkg/kubefedctl"
+	kfenable "sigs.k8s.io/kubefed/pkg/kubefedctl/enable"
+	kfenableopts "sigs.k8s.io/kubefed/pkg/kubefedctl/options"
+	"sigs.k8s.io/kubefed/test/common"
+	"sigs.k8s.io/kubefed/test/e2e/framework"
 
 	. "github.com/onsi/ginkgo"
 )
 
 var _ = Describe("Federated CRD resources", func() {
-	f := framework.NewFederationFramework("crd-resources")
+	f := framework.NewKubeFedFramework("crd-resources")
 
 	namespaceScoped := []bool{
 		true,
@@ -55,13 +54,13 @@ var _ = Describe("Federated CRD resources", func() {
 		Describe(fmt.Sprintf("with namespaced=%v", namespaced), func() {
 			It("should be created, read, updated and deleted successfully", func() {
 				if framework.TestContext.LimitedScope {
-					// The service account of member clusters for
-					// namespaced federation won't have sufficient
-					// permissions to create crds.
+					// The service account of clusters registered with
+					// a namespaced control plane won't have
+					// sufficient permissions to create crds.
 					//
 					// TODO(marun) Revisit this if federation of crds (nee
 					// cr/instances of crds) ever becomes a thing.
-					framework.Skipf("Validation of cr federation is not supported for namespaced federation.")
+					framework.Skipf("Validation of cr federation is not supported for a namespaced control plane.")
 				}
 
 				// Ensure the name the target is unique to avoid
@@ -78,18 +77,18 @@ var _ = Describe("Federated CRD resources", func() {
 
 })
 
-func validateCrdCrud(f framework.FederationFramework, targetCrdKind string, namespaced bool) {
+func validateCrdCrud(f framework.KubeFedFramework, targetCrdKind string, namespaced bool) {
 	tl := framework.NewE2ELogger()
 
 	targetAPIResource := metav1.APIResource{
 		// Need to reuse a group and version for which the helm chart
 		// is granted rbac permissions for.  The default group and
-		// version used by `kubefed2 enable` meets this criteria.
-		Group:   kfenable.DefaultFederationGroup,
-		Version: kfenable.DefaultFederationVersion,
+		// version used by `kubefedctl enable` meets this criteria.
+		Group:   kfenableopts.DefaultFederatedGroup,
+		Version: kfenableopts.DefaultFederatedVersion,
 
 		Kind:       targetCrdKind,
-		Name:       fedv1a1.PluralName(targetCrdKind),
+		Name:       fedv1b1.PluralName(targetCrdKind),
 		Namespaced: namespaced,
 	}
 
@@ -137,10 +136,9 @@ func validateCrdCrud(f framework.FederationFramework, targetCrdKind string, name
 			Name: targetAPIResource.Name,
 		},
 		Spec: kfenable.EnableTypeDirectiveSpec{
-			TargetVersion:     targetAPIResource.Version,
-			FederationGroup:   targetAPIResource.Group,
-			FederationVersion: targetAPIResource.Version,
-			ComparisonField:   apicommon.ResourceVersionField,
+			TargetVersion:    targetAPIResource.Version,
+			FederatedGroup:   targetAPIResource.Group,
+			FederatedVersion: targetAPIResource.Version,
 		},
 	}
 
@@ -150,7 +148,7 @@ func validateCrdCrud(f framework.FederationFramework, targetCrdKind string, name
 	}
 	typeConfig := resources.TypeConfig
 
-	err = kfenable.CreateResources(nil, hostConfig, resources, f.FederationSystemNamespace())
+	err = kfenable.CreateResources(nil, hostConfig, resources, f.KubeFedSystemNamespace())
 	if err != nil {
 		tl.Fatalf("Error creating resources to enable federation of target type %q: %v", targetAPIResource.Kind, err)
 	}
@@ -160,8 +158,8 @@ func validateCrdCrud(f framework.FederationFramework, targetCrdKind string, name
 		// TODO(marun) Make this more resilient so that removal of all
 		// CRDs is attempted even if the removal of any one CRD fails.
 		objectMeta := typeConfig.GetObjectMeta()
-		qualifiedName := util.QualifiedName{Namespace: f.FederationSystemNamespace(), Name: objectMeta.Name}
-		err := kubefed2.DisableFederation(nil, hostConfig, qualifiedName, delete, dryRun)
+		qualifiedName := util.QualifiedName{Namespace: f.KubeFedSystemNamespace(), Name: objectMeta.Name}
+		err := kubefedctl.DisableFederation(nil, hostConfig, enableTypeDirective, qualifiedName, delete, dryRun, false)
 		if err != nil {
 			tl.Fatalf("Error disabling federation of target type %q: %v", targetAPIResource.Kind, err)
 		}
@@ -169,16 +167,16 @@ func validateCrdCrud(f framework.FederationFramework, targetCrdKind string, name
 
 	// Wait for the CRDs to become available in the API
 	for _, c := range configs {
-		waitForCrd(c, tl, typeConfig.GetTarget())
+		waitForCrd(c, tl, typeConfig.GetTargetType())
 	}
 	waitForCrd(hostConfig, tl, typeConfig.GetFederatedType())
 
 	// TODO(marun) If not using in-memory controllers, wait until the
 	// controller has started.
 
-	concreteTypeConfig := typeConfig.(*fedv1a1.FederatedTypeConfig)
+	concreteTypeConfig := typeConfig.(*fedv1b1.FederatedTypeConfig)
 	// FederateResource needs the typeconfig to carry ns within
-	concreteTypeConfig.Namespace = f.FederationSystemNamespace()
+	concreteTypeConfig.Namespace = f.KubeFedSystemNamespace()
 	testObjectsFunc := func(namespace string, clusterNames []string) (*unstructured.Unstructured, []interface{}, error) {
 		fixtureYAML := `
 kind: fixture

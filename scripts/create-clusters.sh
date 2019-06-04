@@ -27,8 +27,10 @@ CONFIGURE_INSECURE_REGISTRY="${CONFIGURE_INSECURE_REGISTRY:-}"
 CONTAINER_REGISTRY_HOST="${CONTAINER_REGISTRY_HOST:-172.17.0.1:5000}"
 NUM_CLUSTERS="${NUM_CLUSTERS:-2}"
 OVERWRITE_KUBECONFIG="${OVERWRITE_KUBECONFIG:-}"
+KIND_TAG="${KIND_TAG:-}"
 docker_daemon_config="/etc/docker/daemon.json"
 kubeconfig="${HOME}/.kube/config"
+OS=`uname`
 
 function create-insecure-registry() {
   # Run insecure registry as container
@@ -90,8 +92,12 @@ function reload-docker-daemon-cmd() {
 function create-clusters() {
   local num_clusters=${1}
 
+  local image_arg=""
+  if [[ "${KIND_TAG}" ]]; then
+    image_arg="--image=kindest/node:${KIND_TAG}"
+  fi
   for i in $(seq ${num_clusters}); do
-    kind create cluster --name "cluster${i}"
+    kind create cluster --name "cluster${i}" ${image_arg}
     # TODO(font): remove once all workarounds are addressed.
     fixup-cluster ${i}
     echo
@@ -125,20 +131,23 @@ function fixup-cluster() {
   # TODO(font): Need to set container IP address in order for clusters to reach
   # kube API servers in other clusters until
   # https://github.com/kubernetes-sigs/kind/issues/111 is resolved.
-  local container_ip_addr=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cluster${i}-control-plane)
-  # Using the container ip allows the use of port 6443 instead of the
-  # random port intended to be exposed on localhost.
-  sed -i "s/localhost.*$/${container_ip_addr}:6443/" ${kubeconfig_path}
+  if [ "$OS" != "Darwin" ];then
+      local container_ip_addr=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' cluster${i}-control-plane)
+      # Using the container ip allows the use of port 6443 instead of the
+      # random port intended to be exposed on localhost.
+      sed -i.bak "s/localhost.*$/${container_ip_addr}:6443/" ${kubeconfig_path}&& rm -rf ${kubeconfig_path}.bak
+  fi
 
   # TODO(font): Need to rename auth user name to avoid conflicts when using
   # multiple cluster kubeconfigs. Remove once
   # https://github.com/kubernetes-sigs/kind/issues/112 is resolved.
-  sed -i "s/kubernetes-admin/kubernetes-cluster${i}-admin/" ${kubeconfig_path}
+  sed -i.bak "s/kubernetes-admin/kubernetes-cluster${i}-admin/" ${kubeconfig_path} && rm -rf ${kubeconfig_path}.bak
 }
 
 function check-clusters-ready() {
   for i in $(seq ${1}); do
-    util::wait-for-condition 'ok' "kubectl --context cluster${i} get --raw=/healthz &> /dev/null" 120
+    local kubeconfig_path="$(kind get kubeconfig-path --name cluster${i})"
+    util::wait-for-condition 'ok' "kubectl --kubeconfig ${kubeconfig_path} --context cluster${i} get --raw=/healthz &> /dev/null" 120
   done
 }
 

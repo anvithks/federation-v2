@@ -19,22 +19,8 @@ package typeconfig
 import (
 	"fmt"
 
-	"github.com/pkg/errors"
-
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
-
-// CheckTypeConfigName checks that the name of the type config is
-// '<target plural name>[.<target group name>]'.
-func CheckTypeConfigName(typeConfig Interface) error {
-	expectedName := GroupQualifiedName(typeConfig.GetTarget())
-	name := typeConfig.GetObjectMeta().Name
-	if expectedName != name {
-		return errors.Errorf("Expected name of FederatedTypeConfig to be %q but got: %q",
-			expectedName, name)
-	}
-	return nil
-}
 
 // GroupQualifiedName returns the plural name of the api resource
 // optionally qualified by its group:
@@ -42,7 +28,7 @@ func CheckTypeConfigName(typeConfig Interface) error {
 //   '<target plural name>[.<target group name>]'
 //
 // This is the naming scheme for FederatedTypeConfig resources.  The
-// scheme ensures that, for a given federation control plane,
+// scheme ensures that, for a given KubeFed control plane,
 // federation of a target type will be configured by at most one
 // FederatedTypeConfig.
 func GroupQualifiedName(apiResource metav1.APIResource) string {
